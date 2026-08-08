@@ -10,12 +10,15 @@ class Book(models.Model):
     author = models.CharField(max_length=512, blank=True)
     description = models.TextField(blank=True)
     cover_url = models.URLField(blank=True)
-    genres = models.JSONField(default=list, blank=True)
+    genres = models.JSONField(default=dict, blank=True)
     published_year = models.PositiveIntegerField(null=True, blank=True)
     isbn = models.CharField(max_length=32, blank=True, db_index=True)
 
     avg_rating = models.DecimalField(max_digits=3, decimal_places=2, default=0)
     ratings_count = models.PositiveIntegerField(default=0)
+
+    seed_avg_rating = models.DecimalField(max_digits=3, decimal_places=2, default=0)
+    seed_ratings_count = models.PositiveIntegerField(default=0)
 
     enriched_at = models.DateTimeField(null=True, blank=True)
 

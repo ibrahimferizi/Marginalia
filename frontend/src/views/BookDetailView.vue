@@ -119,6 +119,16 @@ async function setStatus(status) {
   }
 }
 
+function handleCoverError(event) {
+  const img = event.target
+  const attempts = Number(img.dataset.retryCount || 0)
+  if (attempts >= 3) return
+  img.dataset.retryCount = attempts + 1
+  setTimeout(() => {
+    img.src = `${book.value.cover_url}?retry=${attempts}`
+  }, 1500 * (attempts + 1))
+}
+
 onMounted(() => {
   fetchBook()
   fetchReviews()
@@ -137,7 +147,7 @@ onMounted(() => {
       <p v-if="book.published_year">Published: {{ book.published_year }}</p>
       <p>Rating: {{ book.avg_rating }} ({{ book.ratings_count }} ratings)</p>
       <p v-if="book.description">{{ book.description }}</p>
-      <img v-if="book.cover_url" :src="book.cover_url" :alt="book.title" />
+      <img v-if="book.cover_url" :src="book.cover_url" :alt="book.title" @error="handleCoverError" />
       <div v-if="auth.isLoggedIn">
         <p v-if="!readingListLoading">
           Status:

@@ -170,3 +170,5 @@ MAILERS = {
         'BACKEND': 'django.core.mail.backends.console.EmailBackend',
     },
 }
+
+GOOGLE_BOOKS_API_KEY = env("GOOGLE_BOOKS_API_KEY", default="")

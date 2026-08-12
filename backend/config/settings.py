@@ -172,3 +172,10 @@ MAILERS = {
 }
 
 GOOGLE_BOOKS_API_KEY = env("GOOGLE_BOOKS_API_KEY", default="")
+
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.db.DatabaseCache",
+        "LOCATION": "django_cache_table",
+    }
+}

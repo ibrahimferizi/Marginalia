@@ -1,6 +1,9 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { RouterLink } from 'vue-router'
+import { useAuthStore } from '@/stores/auth'
+
+const auth = useAuthStore()
 
 const books = ref([])
 const loading = ref(true)
@@ -9,6 +12,10 @@ const search = ref('')
 const nextUrl = ref(null)
 const prevUrl = ref(null)
 const count = ref(0)
+
+const recommended = ref([])
+const recommendedLoading = ref(false)
+const recommendedError = ref(null)
 
 const API_BASE = 'http://127.0.0.1:8000/api/books/'
 
@@ -32,6 +39,24 @@ async function fetchBooks(url) {
   }
 }
 
+async function fetchRecommended() {
+  recommendedLoading.value = true
+  recommendedError.value = null
+  try {
+    const response = await fetch(`${API_BASE}recommended/`, {
+      credentials: 'include',
+    })
+    if (!response.ok) {
+      throw new Error(`Request failed: ${response.status}`)
+    }
+    recommended.value = await response.json()
+  } catch (err) {
+    recommendedError.value = err.message
+  } finally {
+    recommendedLoading.value = false
+  }
+}
+
 function runSearch() {
   const url = search.value
     ? `${API_BASE}?search=${encodeURIComponent(search.value)}`
@@ -41,12 +66,27 @@ function runSearch() {
 
 onMounted(() => {
   fetchBooks(API_BASE)
+  if (auth.isLoggedIn) {
+    fetchRecommended()
+  }
 })
 </script>
 
 <template>
   <main>
     <h1>Marginalia</h1>
+
+    <section v-if="auth.isLoggedIn">
+      <h2>Recommended for you</h2>
+      <p v-if="recommendedLoading">Loading recommendations...</p>
+      <p v-else-if="recommendedError">Error: {{ recommendedError }}</p>
+      <p v-else-if="recommended.length === 0">Rate a few books to get recommendations.</p>
+      <ul v-else>
+        <li v-for="book in recommended" :key="book.id">
+          <RouterLink :to="`/books/${book.id}`">{{ book.title }}</RouterLink> — {{ book.author }}
+        </li>
+      </ul>
+    </section>
 
     <form @submit.prevent="runSearch">
       <input v-model="search" placeholder="Search by title or author" />

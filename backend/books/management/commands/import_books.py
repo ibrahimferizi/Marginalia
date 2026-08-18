@@ -1,5 +1,7 @@
 import gzip
+import heapq
 import json
+import math
 import random
 
 from django.core.management.base import BaseCommand
@@ -9,7 +11,7 @@ from books.models import Book
 
 
 class Command(BaseCommand):
-    help = "Import a random sample of books from the Goodreads/UCSD dataset"
+    help = "Import a weighted-random sample of books from the Goodreads/UCSD dataset, favoring higher-rated books"
 
     def add_arguments(self, parser):
         parser.add_argument("books_path", type=str, help="Path to goodreads_books.json.gz")
@@ -71,6 +73,9 @@ class Command(BaseCommand):
 
         book_genres = genres_lookup.get(data.get("book_id"), {})
 
+        if not book_genres and not data.get("description", "").strip():
+            return None
+
         return Book(
             ucsd_id=data.get("book_id"),
             title=title,
@@ -95,19 +100,30 @@ class Command(BaseCommand):
         authors = self.load_authors(authors_path)
         genres_lookup = self.load_genres(genres_path)
 
-        self.stdout.write(f"Sampling {sample_size:,} books from {books_path}...")
-        reservoir = []
+        self.stdout.write(f"Weighted-sampling {sample_size:,} books from {books_path} "
+                           f"(favoring higher ratings_count)...")
+
+        heap = []
         with gzip.open(books_path, "rt", encoding="utf-8") as f:
             for i, line in enumerate(f):
-                if i < sample_size:
-                    reservoir.append(line)
-                else:
-                    j = random.randint(0, i)
-                    if j < sample_size:
-                        reservoir[j] = line
+                try:
+                    peek = json.loads(line)
+                    weight = int(peek.get("ratings_count") or 0) + 1
+                except (json.JSONDecodeError, ValueError):
+                    weight = 1
+
+                u = random.random()
+                key = u ** (1.0 / weight)
+
+                if len(heap) < sample_size:
+                    heapq.heappush(heap, (key, i, line))
+                elif key > heap[0][0]:
+                    heapq.heapreplace(heap, (key, i, line))
+
                 if i % 200_000 == 0 and i > 0:
                     self.stdout.write(f"  scanned {i:,} lines...")
 
+        reservoir = [entry[2] for entry in heap]
         self.stdout.write(f"Sampled {len(reservoir):,} raw lines, parsing...")
 
         books_to_create = []

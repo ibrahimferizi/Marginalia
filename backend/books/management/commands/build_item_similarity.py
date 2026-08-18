@@ -3,6 +3,7 @@ import random
 
 import numpy as np
 from scipy import sparse
+from scipy.sparse.linalg import svds
 
 from django.core.management.base import BaseCommand
 from django.db import transaction
@@ -22,21 +23,34 @@ class Command(BaseCommand):
         parser.add_argument("--top-k", type=int, default=15,
                              help="Number of similar books to store per book")
         parser.add_argument("--min-co-raters", type=int, default=5,
-                             help="Minimum shared raters required between two books to count as similar")
-        parser.add_argument("--min-score", type=float, default=0.25,
-                             help="Minimum cosine similarity required to count as a real neighbor")
+                            help="Minimum shared raters required between two books to count as similar")
+        parser.add_argument("--relative-threshold", type=float, default=0.6,
+                            help="Keep neighbors scoring at least this fraction of the book's own best score")
+        parser.add_argument("--absolute-floor", type=float, default=0.05,
+                            help="Hard minimum similarity score regardless of relative threshold")
+        parser.add_argument("--n-factors", type=int, default=30,
+                            help="Number of latent factors for ALS")
+        parser.add_argument("--als-iterations", type=int, default=8,
+                            help="Number of ALS alternating iterations")
+        parser.add_argument("--regularization", type=float, default=0.1,
+                            help="L2 regularization strength for ALS")
 
     def load_valid_books(self):
-        self.stdout.write("Loading canonical book set...")
-        book_map = {}
-        qs = Book.objects.filter(canonical_book__isnull=True).only("id", "ucsd_id").iterator(chunk_size=5000)
+        self.stdout.write("Loading edition-to-canonical mapping...")
+        edition_to_canonical = {}
+        qs = Book.objects.only("id", "ucsd_id", "canonical_book_id").iterator(chunk_size=5000)
+        canonical_count = 0
         for book in qs:
-            if book.ucsd_id:
-                book_map[book.ucsd_id] = book.id
-        self.stdout.write(f"Loaded {len(book_map):,} canonical books")
-        return book_map
+            if not book.ucsd_id:
+                continue
+            canonical_pk = book.canonical_book_id or book.id
+            edition_to_canonical[book.ucsd_id] = canonical_pk
+            if book.canonical_book_id is None:
+                canonical_count += 1
+        self.stdout.write(f"Mapped {len(edition_to_canonical):,} editions onto {canonical_count:,} canonical books")
+        return edition_to_canonical
 
-    def sample_interactions(self, interactions_path, sample_size, valid_book_ids):
+    def sample_interactions(self, interactions_path, sample_size, edition_to_canonical):
         self.stdout.write(f"Reservoir-sampling up to {sample_size:,} matching interactions...")
         reservoir = []
         seen = 0
@@ -50,11 +64,12 @@ class Command(BaseCommand):
                 except (TypeError, ValueError):
                     continue
 
-                if book_id not in valid_book_ids or rating == 0:
+                canonical_pk = edition_to_canonical.get(book_id)
+                if canonical_pk is None or rating == 0:
                     continue
 
                 seen += 1
-                parsed = {"user_id": record["user_id"], "book_id": book_id, "rating": rating}
+                parsed = {"user_id": record["user_id"], "canonical_pk": canonical_pk, "rating": rating}
                 if len(reservoir) < sample_size:
                     reservoir.append(parsed)
                 else:
@@ -74,17 +89,17 @@ class Command(BaseCommand):
         rows, cols, data = [], [], []
 
         for record in interactions:
-            user_id, book_id, rating = record["user_id"], record["book_id"], record["rating"]
+            user_id, canonical_pk, rating = record["user_id"], record["canonical_pk"], record["rating"]
             if user_id not in user_index:
                 user_index[user_id] = len(user_index)
-            if book_id not in book_index:
-                book_index[book_id] = len(book_index)
+            if canonical_pk not in book_index:
+                book_index[canonical_pk] = len(book_index)
             rows.append(user_index[user_id])
-            cols.append(book_index[book_id])
+            cols.append(book_index[canonical_pk])
             data.append(float(rating))
 
         n_users, n_books = len(user_index), len(book_index)
-        self.stdout.write(f"Matrix: {n_users:,} users x {n_books:,} books, {len(data):,} ratings")
+        self.stdout.write(f"Matrix: {n_users:,} users x {n_books:,} canonical books, {len(data):,} ratings")
         matrix = sparse.csr_matrix((data, (rows, cols)), shape=(n_users, n_books))
         return matrix, book_index
 
@@ -99,6 +114,61 @@ class Command(BaseCommand):
         new_index_to_id = {new_i: old_col_to_id[old_i] for new_i, old_i in enumerate(kept_columns)}
         return filtered, new_index_to_id
 
+    def train_als(self, matrix, n_factors, n_iterations, regularization):
+        self.stdout.write(f"Training ALS with bias terms ({n_factors} factors, {n_iterations} iterations)...")
+        n_users, n_items = matrix.shape
+        rng = np.random.default_rng(42)
+        P = rng.normal(scale=0.1, size=(n_users, n_factors))
+        Q = rng.normal(scale=0.1, size=(n_items, n_factors))
+        b_u = np.zeros(n_users)
+        b_i = np.zeros(n_items)
+        mu = float(matrix.data.mean())
+
+        user_rows = matrix.tocsr()
+        item_cols = matrix.tocsc()
+        reg_eye = regularization * np.eye(n_factors + 1)
+
+        def rmse():
+            coo = user_rows.tocoo()
+            preds = mu + b_u[coo.row] + b_i[coo.col] + np.einsum('ij,ij->i', P[coo.row], Q[coo.col])
+            errors = coo.data - preds
+            return np.sqrt(np.mean(errors ** 2))
+
+        for iteration in range(n_iterations):
+            for u in range(n_users):
+                start, end = user_rows.indptr[u], user_rows.indptr[u + 1]
+                if start == end:
+                    continue
+                item_idx = user_rows.indices[start:end]
+                ratings = user_rows.data[start:end]
+                residual = ratings - mu - b_i[item_idx]
+
+                Q_aug = np.hstack([np.ones((len(item_idx), 1)), Q[item_idx]])
+                A = Q_aug.T @ Q_aug + reg_eye
+                b = Q_aug.T @ residual
+                solution = np.linalg.solve(A, b)
+                b_u[u] = solution[0]
+                P[u] = solution[1:]
+
+            for i in range(n_items):
+                start, end = item_cols.indptr[i], item_cols.indptr[i + 1]
+                if start == end:
+                    continue
+                user_idx = item_cols.indices[start:end]
+                ratings = item_cols.data[start:end]
+                residual = ratings - mu - b_u[user_idx]
+
+                P_aug = np.hstack([np.ones((len(user_idx), 1)), P[user_idx]])
+                A = P_aug.T @ P_aug + reg_eye
+                b = P_aug.T @ residual
+                solution = np.linalg.solve(A, b)
+                b_i[i] = solution[0]
+                Q[i] = solution[1:]
+
+            self.stdout.write(f"  completed iteration {iteration + 1}/{n_iterations}, train RMSE: {rmse():.4f}")
+
+        return Q
+
     def compute_similarity(self, matrix):
         self.stdout.write("Computing item-item cosine similarity...")
         col_norms = np.asarray(np.sqrt(matrix.multiply(matrix).sum(axis=0))).flatten()
@@ -112,13 +182,14 @@ class Command(BaseCommand):
         co_occurrence = (binary.T @ binary).tocsr()
 
         self.stdout.write(f"Similarity matrix: {similarity.shape[0]:,} x {similarity.shape[1]:,}, "
-                           f"{similarity.nnz:,} nonzero entries")
+                          f"{similarity.nnz:,} nonzero entries")
         return similarity, co_occurrence
 
-    def extract_top_k(self, similarity, co_occurrence, index_to_id, top_k, min_co_raters, min_score):
+    def extract_top_k(self, similarity, co_occurrence, index_to_id, top_k, min_co_raters,
+                      relative_threshold, absolute_floor):
         self.stdout.write(
             f"Extracting top {top_k} neighbors per book "
-            f"(min {min_co_raters} shared raters, min score {min_score})..."
+            f"(min {min_co_raters} shared raters, relative={relative_threshold}, floor={absolute_floor})..."
         )
         results = {}
         n_books = similarity.shape[0]
@@ -127,20 +198,26 @@ class Command(BaseCommand):
             row = similarity.getrow(i)
             co_row = co_occurrence.getrow(i)
             neighbor_indices, neighbor_scores = row.indices, row.data
-
             co_lookup = dict(zip(co_row.indices, co_row.data))
 
-            mask = np.array([
-                idx != i and co_lookup.get(idx, 0) >= min_co_raters and score >= min_score
-                for idx, score in zip(neighbor_indices, neighbor_scores)
+            valid_mask = np.array([
+                idx != i and co_lookup.get(idx, 0) >= min_co_raters
+                for idx in neighbor_indices
             ])
-            neighbor_indices, neighbor_scores = neighbor_indices[mask], neighbor_scores[mask]
+            neighbor_indices, neighbor_scores = neighbor_indices[valid_mask], neighbor_scores[valid_mask]
+            if len(neighbor_scores) == 0:
+                continue
+
+            book_max = neighbor_scores.max()
+            cutoff = max(absolute_floor, book_max * relative_threshold)
+            keep_mask = neighbor_scores >= cutoff
+            neighbor_indices, neighbor_scores = neighbor_indices[keep_mask], neighbor_scores[keep_mask]
             if len(neighbor_indices) == 0:
                 continue
 
             order = np.argsort(neighbor_scores)[::-1][:top_k]
             results[index_to_id[i]] = [
-                {"ucsd_id": index_to_id[neighbor_indices[j]], "score": round(float(neighbor_scores[j]), 4)}
+                {"book_id": index_to_id[neighbor_indices[j]], "score": round(float(neighbor_scores[j]), 4)}
                 for j in order
             ]
             if i % 5000 == 0 and i > 0:
@@ -148,19 +225,12 @@ class Command(BaseCommand):
 
         return results
 
-    def save_results(self, results, book_map):
+    def save_results(self, results):
         self.stdout.write("Saving similar_books to database...")
-        books_to_update = []
-        for ucsd_id, neighbors in results.items():
-            book_pk = book_map.get(ucsd_id)
-            if book_pk is None:
-                continue
-            resolved = [
-                {"book_id": book_map[n["ucsd_id"]], "score": n["score"]}
-                for n in neighbors if n["ucsd_id"] in book_map
-            ]
-            if resolved:
-                books_to_update.append(Book(id=book_pk, similar_books=resolved))
+        books_to_update = [
+            Book(id=canonical_pk, similar_books=neighbors)
+            for canonical_pk, neighbors in results.items()
+        ]
 
         self.stdout.write(f"Updating {len(books_to_update):,} books...")
         batch_size = 2000
@@ -173,15 +243,15 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS("Done."))
 
     def handle(self, *args, **options):
-        book_map = self.load_valid_books()
+        edition_to_canonical = self.load_valid_books()
         interactions = self.sample_interactions(
-            options["interactions_path"], options["sample_size"], set(book_map.keys())
+            options["interactions_path"], options["sample_size"], edition_to_canonical
         )
         matrix, book_index = self.build_matrix(interactions)
         filtered_matrix, index_to_id = self.filter_sparse_books(matrix, book_index, options["min_ratings"])
         similarity, co_occurrence = self.compute_similarity(filtered_matrix)
         results = self.extract_top_k(
-            similarity, co_occurrence, index_to_id,
-            options["top_k"], options["min_co_raters"], options["min_score"],
+            similarity, co_occurrence, index_to_id, options["top_k"], options["min_co_raters"],
+            options["relative_threshold"], options["absolute_floor"],
         )
-        self.save_results(results, book_map)
+        self.save_results(results)

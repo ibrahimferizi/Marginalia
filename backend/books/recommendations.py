@@ -71,3 +71,40 @@ def hybrid_recommendations(user, limit=20):
 
     cache.set(cache_key, [b.id for b in top_books], timeout=CACHE_TIMEOUT)
     return top_books
+
+def content_similar_books(book, limit=15):
+    cache_key = f"similar_books:content:{book.id}"
+    cached_ids = cache.get(cache_key)
+    if cached_ids is not None:
+        books = Book.objects.filter(id__in=cached_ids)
+        books_by_id = {b.id: b for b in books}
+        return [books_by_id[i] for i in cached_ids if i in books_by_id]
+
+    if not book.genres:
+        return []
+
+    candidates = Book.objects.filter(canonical_book__isnull=True).exclude(
+        id=book.id
+    ).only("id", "title", "author", "genres", "avg_rating", "ratings_count")
+
+    scored = []
+    for candidate in candidates.iterator(chunk_size=2000):
+        score = cosine_similarity(book.genres, candidate.genres or {})
+        if score > 0:
+            scored.append((score, candidate))
+
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    top_books = [b for _, b in scored[:limit]]
+
+    cache.set(cache_key, [b.id for b in top_books], timeout=None)
+    return top_books
+
+def similar_books_for(book, limit=15):
+    neighbors = book.similar_books or []
+    if neighbors:
+        neighbor_ids = [n["book_id"] for n in neighbors[:limit]]
+        books = Book.objects.filter(id__in=neighbor_ids)
+        books_by_id = {b.id: b for b in books}
+        return [books_by_id[i] for i in neighbor_ids if i in books_by_id]
+
+    return content_similar_books(book, limit=limit)

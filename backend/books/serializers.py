@@ -17,5 +17,6 @@ class BookSerializer(serializers.ModelSerializer):
             "isbn",
             "avg_rating",
             "ratings_count",
+            "similar_books",
         ]
         read_only_fields = ["avg_rating", "ratings_count"]

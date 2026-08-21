@@ -14,7 +14,7 @@ const auth = useAuthStore()
       | Logged in as {{ auth.username }} <button @click="auth.logout()">Logout</button>
       | <RouterLink to="/profile">Profile</RouterLink>
     </span>
-    <span v-else> | <RouterLink to="/login">Login</RouterLink></span>
+    <span v-else> | <RouterLink to="/login">Login</RouterLink> | <RouterLink to="/register">Sign up</RouterLink></span>
   </nav>
 
   <RouterView />

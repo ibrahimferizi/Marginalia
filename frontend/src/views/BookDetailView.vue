@@ -1,7 +1,8 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
+import placeholderCover from '@/assets/placeholder-cover.png'
 
 const route = useRoute()
 const auth = useAuthStore()
@@ -24,6 +25,9 @@ const readingListEntry = ref(null)
 const readingListLoading = ref(true)
 const readingListError = ref(null)
 
+const similarBooks = ref([])
+const similarLoading = ref(true)
+
 const STATUS_OPTIONS = [
   { value: 'want_to_read', label: 'Want to Read' },
   { value: 'reading', label: 'Reading' },
@@ -40,6 +44,16 @@ async function fetchBook() {
     error.value = err.message
   } finally {
     loading.value = false
+  }
+}
+
+async function fetchSimilarBooks() {
+  similarLoading.value = true
+  try {
+    const response = await fetch(`${API_BASE}/books/${route.params.id}/similar/`)
+    similarBooks.value = await response.json()
+  } finally {
+    similarLoading.value = false
   }
 }
 
@@ -129,11 +143,25 @@ function handleCoverError(event) {
   }, 1500 * (attempts + 1))
 }
 
-onMounted(() => {
-  fetchBook()
-  fetchReviews()
-  fetchReadingListEntry()
-})
+watch(
+  () => route.params.id,
+  () => {
+    loading.value = true
+    error.value = null
+    book.value = null
+    reviews.value = []
+    readingListEntry.value = null
+    newRating.value = 5
+    newText.value = ''
+    similarBooks.value = []
+    fetchBook()
+    fetchReviews()
+    fetchReadingListEntry()
+    fetchSimilarBooks()
+  },
+  { immediate: true },
+)
+
 </script>
 
 <template>
@@ -147,7 +175,7 @@ onMounted(() => {
       <p v-if="book.published_year">Published: {{ book.published_year }}</p>
       <p>Rating: {{ book.avg_rating }} ({{ book.ratings_count }} ratings)</p>
       <p v-if="book.description">{{ book.description }}</p>
-      <img v-if="book.cover_url" :src="book.cover_url" :alt="book.title" @error="handleCoverError" />
+      <img :src="book.cover_url || placeholderCover" :alt="book.title" @error="handleCoverError" />
       <div v-if="auth.isLoggedIn">
         <p v-if="!readingListLoading">
           Status:
@@ -161,6 +189,18 @@ onMounted(() => {
         <p v-if="readingListError">{{ readingListError }}</p>
       </div>
     </article>
+
+    <section>
+      <h2>Similar books</h2>
+      <p v-if="similarLoading">Loading similar books...</p>
+      <p v-else-if="similarBooks.length === 0">No similar books found yet.</p>
+      <ul v-else>
+        <li v-for="similar in similarBooks" :key="similar.id">
+          <img :src="similar.cover_url  || placeholderCover" :alt="similar.title" width="60" />
+          <RouterLink :to="`/books/${similar.id}`">{{ similar.title }}</RouterLink> — {{ similar.author }}
+        </li>
+      </ul>
+    </section>
 
     <section>
       <h2>Reviews</h2>
@@ -191,3 +231,20 @@ onMounted(() => {
     </section>
   </main>
 </template>
+
+<style scoped>
+article img {
+  width: 98px;
+  height: 146px;
+}
+
+li img {
+  width: 60px;
+  height: 90px;
+  object-fit: cover;
+  border-radius: 2px;
+  vertical-align: middle;
+  margin-right: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+</style>

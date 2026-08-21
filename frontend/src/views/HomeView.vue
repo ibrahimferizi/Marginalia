@@ -1,8 +1,11 @@
 <script setup>
-import { ref, onMounted } from 'vue'
-import { RouterLink } from 'vue-router'
+import { ref, onMounted, watch } from 'vue'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import placeholderCover from '@/assets/placeholder-cover.png'
 
+const route = useRoute()
+const router = useRouter()
 const auth = useAuthStore()
 
 const books = ref([])
@@ -58,14 +61,22 @@ async function fetchRecommended() {
 }
 
 function runSearch() {
-  const url = search.value
-    ? `${API_BASE}?search=${encodeURIComponent(search.value)}`
-    : API_BASE
-  fetchBooks(url)
+  router.push({ path: '/', query: search.value ? { search: search.value } : {} })
 }
 
+watch(
+  () => route.query.search,
+  (searchQuery) => {
+    search.value = searchQuery ?? ''
+    const url = searchQuery
+      ? `${API_BASE}?search=${encodeURIComponent(searchQuery)}`
+      : API_BASE
+    fetchBooks(url)
+  },
+  { immediate: true },
+)
+
 onMounted(() => {
-  fetchBooks(API_BASE)
   if (auth.isLoggedIn) {
     fetchRecommended()
   }
@@ -83,6 +94,7 @@ onMounted(() => {
       <p v-else-if="recommended.length === 0">Rate a few books to get recommendations.</p>
       <ul v-else>
         <li v-for="book in recommended" :key="book.id">
+          <img :src="book.cover_url || placeholderCover" :alt="book.title" width="60" />
           <RouterLink :to="`/books/${book.id}`">{{ book.title }}</RouterLink> — {{ book.author }}
         </li>
       </ul>
@@ -101,6 +113,7 @@ onMounted(() => {
 
       <ul>
         <li v-for="book in books" :key="book.id">
+          <img :src="book.cover_url || placeholderCover" :alt="book.title" width="60" />
           <RouterLink :to="`/books/${book.id}`">{{ book.title }}</RouterLink> — {{ book.author }}
         </li>
       </ul>
@@ -110,3 +123,15 @@ onMounted(() => {
     </template>
   </main>
 </template>
+
+<style scoped>
+li img {
+  width: 60px;
+  height: 90px;
+  object-fit: cover;
+  border-radius: 2px;
+  vertical-align: middle;
+  margin-right: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+</style>

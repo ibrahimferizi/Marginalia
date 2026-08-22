@@ -11,7 +11,19 @@ from .serializers import BookSerializer
 from django.db.models import F, FloatField, ExpressionWrapper
 from django.db.models.functions import Cast
 
+from pgvector.django import CosineDistance
+from sentence_transformers import SentenceTransformer
+
 # Create your views here.
+
+_embedding_model = None
+
+
+def get_embedding_model():
+    global _embedding_model
+    if _embedding_model is None:
+        _embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+    return _embedding_model
 
 class BookViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Book.objects.all()
@@ -57,5 +69,23 @@ class BookViewSet(viewsets.ReadOnlyModelViewSet):
     def similar(self, request, pk=None):
         book = self.get_object()
         books = similar_books_for(book)
+        serializer = self.get_serializer(books, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=["get"], permission_classes=[permissions.AllowAny])
+    def semantic_search(self, request):
+        query = request.query_params.get("q", "").strip()
+        if not query:
+            return Response({"detail": "Query parameter 'q' is required."}, status=400)
+
+        model = get_embedding_model()
+        query_embedding = model.encode(query)
+
+        books = (
+            Book.objects.filter(canonical_book__isnull=True, embedding__isnull=False)
+            .annotate(distance=CosineDistance("embedding", query_embedding))
+            .order_by("distance")[:20]
+        )
+
         serializer = self.get_serializer(books, many=True)
         return Response(serializer.data)

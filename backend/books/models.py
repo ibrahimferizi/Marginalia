@@ -1,4 +1,5 @@
 from django.db import models
+from pgvector.django import VectorField
 
 # Create your models here.
 
@@ -34,6 +35,8 @@ class Book(models.Model):
     )
 
     similar_books = models.JSONField(default=dict, blank=True)
+
+    embedding = VectorField(dimensions=384, null=True, blank=True)
 
     class Meta:
         ordering = ["title"]

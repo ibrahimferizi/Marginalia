@@ -2,6 +2,7 @@ from rest_framework import serializers
 from .models import Book
 
 class BookSerializer(serializers.ModelSerializer):
+    recommendation_reason = serializers.SerializerMethodField()
     class Meta:
         model = Book
         fields = [
@@ -18,5 +19,9 @@ class BookSerializer(serializers.ModelSerializer):
             "avg_rating",
             "ratings_count",
             "similar_books",
+            "recommendation_reason",
         ]
         read_only_fields = ["avg_rating", "ratings_count"]
+
+    def get_recommendation_reason(self, obj):
+        return getattr(obj, "recommendation_reason", None)

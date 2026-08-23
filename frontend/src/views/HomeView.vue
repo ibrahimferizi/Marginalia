@@ -20,6 +20,8 @@ const recommended = ref([])
 const recommendedLoading = ref(false)
 const recommendedError = ref(null)
 
+const searchMode = ref('keyword')
+
 const API_BASE = 'http://127.0.0.1:8000/api/books/'
 
 async function fetchBooks(url) {
@@ -31,10 +33,17 @@ async function fetchBooks(url) {
       throw new Error(`Request failed: ${response.status}`)
     }
     const data = await response.json()
-    books.value = data.results ?? data
-    nextUrl.value = data.next ?? null
-    prevUrl.value = data.previous ?? null
-    count.value = data.count ?? books.value.length
+    if (Array.isArray(data)) {
+      books.value = data
+      nextUrl.value = null
+      prevUrl.value = null
+      count.value = data.length
+    } else {
+      books.value = data.results ?? data
+      nextUrl.value = data.next ?? null
+      prevUrl.value = data.previous ?? null
+      count.value = data.count ?? books.value.length
+    }
   } catch (err) {
     error.value = err.message
   } finally {
@@ -61,16 +70,38 @@ async function fetchRecommended() {
 }
 
 function runSearch() {
-  router.push({ path: '/', query: search.value ? { search: search.value } : {} })
+  router.push({
+    path: '/',
+    query: search.value
+      ? { search: search.value, mode: searchMode.value }
+      : {},
+  })
+}
+
+function formatReason(reason) {
+  if (!reason) return ''
+  if (reason.type === 'content') {
+    return `Because you enjoy ${reason.shared_genres.join(' and ')}`
+  }
+  if (reason.type === 'collaborative') {
+    return `Because you liked ${reason.source_book.title}`
+  }
+  return ''
 }
 
 watch(
-  () => route.query.search,
-  (searchQuery) => {
+  () => [route.query.search, route.query.mode],
+  ([searchQuery, mode]) => {
     search.value = searchQuery ?? ''
-    const url = searchQuery
-      ? `${API_BASE}?search=${encodeURIComponent(searchQuery)}`
-      : API_BASE
+    searchMode.value = mode ?? 'keyword'
+    if (!searchQuery) {
+      fetchBooks(API_BASE)
+      return
+    }
+    const url =
+      searchMode.value === 'semantic'
+        ? `${API_BASE}semantic_search/?q=${encodeURIComponent(searchQuery)}`
+        : `${API_BASE}?search=${encodeURIComponent(searchQuery)}`
     fetchBooks(url)
   },
   { immediate: true },
@@ -96,12 +127,21 @@ onMounted(() => {
         <li v-for="book in recommended" :key="book.id">
           <img :src="book.cover_url || placeholderCover" :alt="book.title" width="60" />
           <RouterLink :to="`/books/${book.id}`">{{ book.title }}</RouterLink> — {{ book.author }}
+          <p v-if="book.recommendation_reason" class="reason">
+            {{ formatReason(book.recommendation_reason) }}
+          </p>
         </li>
       </ul>
     </section>
 
     <form @submit.prevent="runSearch">
       <input v-model="search" placeholder="Search by title or author" />
+      <label>
+        <input type="radio" value="keyword" v-model="searchMode" /> Keyword
+      </label>
+      <label>
+        <input type="radio" value="semantic" v-model="searchMode" /> Smart search
+      </label>
       <button type="submit">Search</button>
     </form>
 
@@ -118,8 +158,10 @@ onMounted(() => {
         </li>
       </ul>
 
-      <button :disabled="!prevUrl" @click="fetchBooks(prevUrl)">Previous</button>
-      <button :disabled="!nextUrl" @click="fetchBooks(nextUrl)">Next</button>
+      <template v-if="searchMode === 'keyword'">
+        <button :disabled="!prevUrl" @click="fetchBooks(prevUrl)">Previous</button>
+        <button :disabled="!nextUrl" @click="fetchBooks(nextUrl)">Next</button>
+      </template>
     </template>
   </main>
 </template>

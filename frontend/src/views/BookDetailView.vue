@@ -143,6 +143,17 @@ function handleCoverError(event) {
   }, 1500 * (attempts + 1))
 }
 
+function formatReason(reason) {
+  if (!reason) return ''
+  if (reason.type === 'content') {
+    return `Because you enjoy ${reason.shared_genres.join(' and ')}`
+  }
+  if (reason.type === 'collaborative') {
+    return `Because you liked ${reason.source_book.title}`
+  }
+  return ''
+}
+
 watch(
   () => route.params.id,
   () => {
@@ -198,6 +209,9 @@ watch(
         <li v-for="similar in similarBooks" :key="similar.id">
           <img :src="similar.cover_url  || placeholderCover" :alt="similar.title" width="60" />
           <RouterLink :to="`/books/${similar.id}`">{{ similar.title }}</RouterLink> — {{ similar.author }}
+          <p v-if="similar.recommendation_reason" class="reason">
+            {{ formatReason(similar.recommendation_reason) }}
+          </p>
         </li>
       </ul>
     </section>

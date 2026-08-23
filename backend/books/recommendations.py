@@ -96,7 +96,7 @@ def hybrid_recommendations(user, limit=20):
                 }
             scored.append((final_score, book))
 
-    scored.sort(key=lambda pair: pair[0], reverse=True)
+    scored.sort(key=lambda pair: (pair[0], pair[1].ratings_count), reverse=True)
     top_books = [book for _, book in scored[:limit]]
 
     cache_payload = [
@@ -137,7 +137,7 @@ def content_similar_books(book, limit=15):
             }
             scored.append((score, candidate))
 
-    scored.sort(key=lambda pair: pair[0], reverse=True)
+    scored.sort(key=lambda pair: (pair[0], pair[1].ratings_count), reverse=True)
     top_books = [b for _, b in scored[:limit]]
 
     cache_payload = [

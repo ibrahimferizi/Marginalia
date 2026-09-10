@@ -1,6 +1,7 @@
 import math
 from django.core.cache import cache
 from .models import Book
+import numpy as np
 
 CACHE_TIMEOUT = None
 
@@ -12,6 +13,17 @@ def cosine_similarity(vec_a: dict, vec_b: dict) -> float:
     if norm_a == 0 or norm_b == 0:
         return 0.0
     return dot / (norm_a * norm_b)
+
+def cosine_similarity_vectors(vec_a, vec_b):
+    if vec_a is None or vec_b is None:
+        return 0.0
+    a = np.asarray(vec_a, dtype=float)
+    b = np.asarray(vec_b, dtype=float)
+    norm_a = np.linalg.norm(a)
+    norm_b = np.linalg.norm(b)
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return float(np.dot(a, b) / (norm_a * norm_b))
 
 def build_collab_candidates(user, min_rating=4):
     reviews = user.reviews.select_related("book").filter(rating__gte=min_rating)
@@ -49,7 +61,7 @@ def shared_genres(vec_a: dict, vec_b: dict, top_n=2):
     return ranked[:top_n]
 
 def hybrid_recommendations(user, limit=20):
-    cache_key = f"recommendations:hybrid:v2:{user.id}"
+    cache_key = f"recommendations:hybrid:v3:{user.id}"
     cached = cache.get(cache_key)
     if cached is not None:
         book_ids = [entry["id"] for entry in cached]
@@ -72,18 +84,21 @@ def hybrid_recommendations(user, limit=20):
 
     candidates = Book.objects.filter(canonical_book__isnull=True).exclude(
         id__in=already_reviewed
-    ).only("id", "title", "author", "genres", "avg_rating", "ratings_count")
+    ).only("id", "title", "author", "genres", "avg_rating", "ratings_count", "embedding")
 
     scored = []
     for book in candidates.iterator(chunk_size=2000):
-        content_score = cosine_similarity(user.taste_vector, book.genres or {})
+        content_score = cosine_similarity_vectors(user.taste_embedding, book.embedding)
         raw_collab = collab_predictions.get(book.id, 0) / 5.0
         weighted_content = alpha * content_score
         weighted_collab = (1 - alpha) * raw_collab
         final_score = weighted_content + weighted_collab
 
         if final_score > 0:
-            if weighted_collab > weighted_content and book.id in top_source:
+            content_share = content_score
+            collab_share = raw_collab
+
+            if collab_share > content_share and book.id in top_source:
                 source_book, _ = top_source[book.id]
                 book.recommendation_reason = {
                     "type": "collaborative",

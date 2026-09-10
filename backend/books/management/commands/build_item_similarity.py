@@ -3,7 +3,6 @@ import random
 
 import numpy as np
 from scipy import sparse
-from scipy.sparse.linalg import svds
 
 from django.core.management.base import BaseCommand
 from django.db import transaction
@@ -34,6 +33,11 @@ class Command(BaseCommand):
                             help="Number of ALS alternating iterations")
         parser.add_argument("--regularization", type=float, default=0.1,
                             help="L2 regularization strength for ALS")
+        parser.add_argument("--bias-regularization", type=float, default=0.01,
+                            help="L2 regularization for ALS bias terms, kept lighter than factor "
+                                 "regularization so bias can absorb popularity signal cleanly")
+        parser.add_argument("--block-size", type=int, default=2000,
+                            help="Row-block size for batched ALS-factor similarity computation")
 
     def load_valid_books(self):
         self.stdout.write("Loading edition-to-canonical mapping...")
@@ -114,8 +118,13 @@ class Command(BaseCommand):
         new_index_to_id = {new_i: old_col_to_id[old_i] for new_i, old_i in enumerate(kept_columns)}
         return filtered, new_index_to_id
 
-    def train_als(self, matrix, n_factors, n_iterations, regularization):
-        self.stdout.write(f"Training ALS with bias terms ({n_factors} factors, {n_iterations} iterations)...")
+    def train_als(self, matrix, n_factors, n_iterations, regularization, bias_regularization=None):
+        if bias_regularization is None:
+            bias_regularization = regularization
+        self.stdout.write(
+            f"Training ALS with bias terms ({n_factors} factors, {n_iterations} iterations, "
+            f"factor_reg={regularization}, bias_reg={bias_regularization})..."
+        )
         n_users, n_items = matrix.shape
         rng = np.random.default_rng(42)
         P = rng.normal(scale=0.1, size=(n_users, n_factors))
@@ -126,7 +135,9 @@ class Command(BaseCommand):
 
         user_rows = matrix.tocsr()
         item_cols = matrix.tocsc()
-        reg_eye = regularization * np.eye(n_factors + 1)
+        reg_diag = np.full(n_factors + 1, regularization)
+        reg_diag[0] = bias_regularization
+        reg_eye = np.diag(reg_diag)
 
         def rmse():
             coo = user_rows.tocoo()
@@ -169,6 +180,11 @@ class Command(BaseCommand):
 
         return Q
 
+    def compute_co_occurrence(self, matrix):
+        self.stdout.write("Computing co-rater overlap counts...")
+        binary = (matrix != 0).astype(np.float64)
+        return (binary.T @ binary).tocsr()
+
     def compute_similarity(self, matrix):
         self.stdout.write("Computing item-item cosine similarity...")
         col_norms = np.asarray(np.sqrt(matrix.multiply(matrix).sum(axis=0))).flatten()
@@ -176,14 +192,55 @@ class Command(BaseCommand):
         inv_norms = sparse.diags(1.0 / col_norms)
         normalized = matrix @ inv_norms
         similarity = (normalized.T @ normalized).tocsr()
-
-        self.stdout.write("Computing co-rater overlap counts...")
-        binary = (matrix != 0).astype(np.float64)
-        co_occurrence = (binary.T @ binary).tocsr()
-
+        co_occurrence = self.compute_co_occurrence(matrix)
         self.stdout.write(f"Similarity matrix: {similarity.shape[0]:,} x {similarity.shape[1]:,}, "
                           f"{similarity.nnz:,} nonzero entries")
         return similarity, co_occurrence
+
+    def compute_als_similarity_blocked(self, Q, co_occurrence, index_to_id, top_k, min_co_raters,
+                                       relative_threshold, absolute_floor, block_size=2000):
+        self.stdout.write(f"Computing ALS-factor similarity in blocks of {block_size}...")
+        n_items = Q.shape[0]
+        norms = np.linalg.norm(Q, axis=1)
+        norms[norms == 0] = 1
+        Q_norm = Q / norms[:, None]
+
+        results = {}
+        for start in range(0, n_items, block_size):
+            end = min(start + block_size, n_items)
+            block_sim = Q_norm[start:end] @ Q_norm.T
+
+            for local_i, i in enumerate(range(start, end)):
+                co_row = co_occurrence.getrow(i)
+                co_lookup = dict(zip(co_row.indices, co_row.data))
+
+                candidate_indices = np.array([idx for idx in co_lookup if idx != i])
+                if len(candidate_indices) == 0:
+                    continue
+                candidate_scores = block_sim[local_i, candidate_indices]
+
+                valid_mask = np.array([co_lookup[idx] >= min_co_raters for idx in candidate_indices])
+                candidate_indices, candidate_scores = candidate_indices[valid_mask], candidate_scores[valid_mask]
+                if len(candidate_scores) == 0:
+                    continue
+
+                book_max = candidate_scores.max()
+                cutoff = max(absolute_floor, book_max * relative_threshold)
+                keep_mask = candidate_scores >= cutoff
+                candidate_indices, candidate_scores = candidate_indices[keep_mask], candidate_scores[keep_mask]
+                if len(candidate_indices) == 0:
+                    continue
+
+                order = np.argsort(candidate_scores)[::-1][:top_k]
+                results[index_to_id[i]] = [
+                    {"book_id": index_to_id[candidate_indices[j]], "score": round(float(candidate_scores[j]), 4)}
+                    for j in order
+                ]
+
+            del block_sim
+            self.stdout.write(f"  processed {end:,} / {n_items:,} books...")
+
+        return results
 
     def extract_top_k(self, similarity, co_occurrence, index_to_id, top_k, min_co_raters,
                       relative_threshold, absolute_floor):

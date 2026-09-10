@@ -34,7 +34,7 @@ class Book(models.Model):
         related_name='duplicate_editions',
     )
 
-    similar_books = models.JSONField(default=dict, blank=True)
+    similar_books = models.JSONField(default=list, blank=True)
 
     embedding = VectorField(dimensions=384, null=True, blank=True)
 

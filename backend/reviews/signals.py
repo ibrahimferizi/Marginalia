@@ -1,3 +1,4 @@
+import numpy as np
 from django.db.models import Avg, Count
 from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
@@ -24,18 +25,29 @@ def _recalculate_book_rating(book):
 def _recalculate_taste_vector(user):
     reviews = Review.objects.filter(user=user).select_related("book")
     taste = {}
+    embedding_sum = None
+    embedding_weight_total = 0.0
+
     for review in reviews:
         book_genres = review.book.genres or {}
         genre_total = sum(book_genres.values())
-        if not genre_total:
-            continue
-        rating_weight = review.rating
-        for genre, count in book_genres.items():
-            normalized = count / genre_total
-            taste[genre] = taste.get(genre, 0) + normalized * rating_weight
+        if genre_total:
+            rating_weight = review.rating
+            for genre, count in book_genres.items():
+                normalized = count / genre_total
+                taste[genre] = taste.get(genre, 0) + normalized * rating_weight
+
+        if review.book.embedding is not None:
+            vec = np.asarray(review.book.embedding, dtype=float)
+            embedding_sum = vec * review.rating if embedding_sum is None else embedding_sum + vec * review.rating
+            embedding_weight_total += review.rating
+
     user.taste_vector = taste
-    user.save(update_fields=["taste_vector"])
-    cache.delete(f"recommendations:hybrid:{user.id}")
+    user.taste_embedding = (
+        (embedding_sum / embedding_weight_total).tolist() if embedding_weight_total > 0 else None
+    )
+    user.save(update_fields=["taste_vector", "taste_embedding"])
+    cache.delete(f"recommendations:hybrid:v3:{user.id}")
 
 @receiver(post_save, sender=Review)
 def update_book_rating_on_save(sender, instance, **kwargs):

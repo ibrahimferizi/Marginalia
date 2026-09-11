@@ -51,7 +51,10 @@ async function fetchSimilarBooks() {
   similarLoading.value = true
   try {
     const response = await fetch(`${API_BASE}/books/${route.params.id}/similar/`)
+    if (!response.ok) throw new Error(`Request failed: ${response.status}`)
     similarBooks.value = await response.json()
+  } catch {
+    similarBooks.value = []
   } finally {
     similarLoading.value = false
   }
@@ -146,10 +149,14 @@ function handleCoverError(event) {
 function formatReason(reason) {
   if (!reason) return ''
   if (reason.type === 'content') {
-    return `Because you enjoy ${reason.shared_genres.join(' and ')}`
+    return reason.shared_genres?.length
+      ? `Because you enjoy ${reason.shared_genres.join(' and ')}`
+      : ''
   }
   if (reason.type === 'collaborative') {
-    return `Because you liked ${reason.source_book.title}`
+    return reason.source_book?.title
+      ? `Because you liked ${reason.source_book.title}`
+      : 'Readers with similar taste also liked this'
   }
   return ''
 }

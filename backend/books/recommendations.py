@@ -2,6 +2,7 @@ import math
 from django.core.cache import cache
 from .models import Book
 import numpy as np
+from pgvector.django import CosineDistance
 
 CACHE_TIMEOUT = None
 
@@ -60,8 +61,8 @@ def shared_genres(vec_a: dict, vec_b: dict, top_n=2):
     ranked = sorted(shared, key=lambda k: vec_a[k] * vec_b[k], reverse=True)
     return ranked[:top_n]
 
-def hybrid_recommendations(user, limit=20):
-    cache_key = f"recommendations:hybrid:v3:{user.id}"
+def hybrid_recommendations(user, limit=20, content_pool_size=500):
+    cache_key = f"recommendations:hybrid:v4:{user.id}"
     cached = cache.get(cache_key)
     if cached is not None:
         book_ids = [entry["id"] for entry in cached]
@@ -82,13 +83,41 @@ def hybrid_recommendations(user, limit=20):
     collab_predictions, books_with_collab_data, top_source = build_collab_candidates(user)
     alpha = compute_alpha(books_with_collab_data)
 
-    candidates = Book.objects.filter(canonical_book__isnull=True).exclude(
-        id__in=already_reviewed
-    ).only("id", "title", "author", "genres", "avg_rating", "ratings_count", "embedding")
+    base_qs = Book.objects.filter(canonical_book__isnull=True).exclude(id__in=already_reviewed)
+    fields = ("id", "title", "author", "genres", "avg_rating", "ratings_count")
+
+    candidates_by_id = {}
+    taste_embedding = user.taste_embedding
+
+    if taste_embedding is not None:
+        content_qs = (
+            base_qs.filter(embedding__isnull=False)
+            .annotate(distance=CosineDistance("embedding", taste_embedding))
+            .order_by("distance")
+            .only(*fields)[:content_pool_size]
+        )
+        for book in content_qs:
+            candidates_by_id[book.id] = (book, 1.0 - book.distance)
+
+    collab_ids = set(collab_predictions.keys()) - set(candidates_by_id.keys())
+    if collab_ids:
+        if taste_embedding is not None:
+            collab_content_qs = (
+                base_qs.filter(id__in=collab_ids, embedding__isnull=False)
+                .annotate(distance=CosineDistance("embedding", taste_embedding))
+                .only(*fields)
+            )
+            for book in collab_content_qs:
+                candidates_by_id[book.id] = (book, 1.0 - book.distance)
+
+        still_missing = collab_ids - set(candidates_by_id.keys())
+        if still_missing:
+            no_embedding_qs = base_qs.filter(id__in=still_missing).only(*fields)
+            for book in no_embedding_qs:
+                candidates_by_id[book.id] = (book, 0.0)
 
     scored = []
-    for book in candidates.iterator(chunk_size=2000):
-        content_score = cosine_similarity_vectors(user.taste_embedding, book.embedding)
+    for book, content_score in candidates_by_id.values():
         raw_collab = collab_predictions.get(book.id, 0) / 5.0
         weighted_content = alpha * content_score
         weighted_collab = (1 - alpha) * raw_collab

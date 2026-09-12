@@ -8,6 +8,7 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 
 from books.models import Book
+from books.metadata import source_metadata
 
 
 class Command(BaseCommand):
@@ -78,6 +79,7 @@ class Command(BaseCommand):
 
         return Book(
             ucsd_id=data.get("book_id"),
+            **source_metadata(data),
             title=title,
             author=author,
             description=data.get("description", ""),

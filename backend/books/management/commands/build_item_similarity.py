@@ -1,10 +1,15 @@
 import csv
 import random
+import hashlib
+import json
+from array import array
+from pathlib import Path
 
 import numpy as np
 from scipy import sparse
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
+from django.core.cache import cache
 from django.db import transaction
 
 from books.models import Book
@@ -14,9 +19,12 @@ class Command(BaseCommand):
     help = "Compute item-item collaborative filtering similarity from Goodreads interaction data"
 
     def add_arguments(self, parser):
-        parser.add_argument("interactions_path", type=str, help="Path to the interactions .json.gz file")
-        parser.add_argument("--sample-size", type=int, default=5_000_000,
-                             help="Number of matching interactions to reservoir-sample")
+        parser.add_argument("interactions_path", type=str, help="Path to goodreads_interactions.csv")
+        parser.add_argument("--book-id-map", type=str, help="Path to book_id_map.csv; defaults to the CSV's directory")
+        parser.add_argument("--seed", type=int, default=42)
+        parser.add_argument("--matrix-cache", type=str, help="Optional .npz cache for the validated rating matrix")
+        parser.add_argument("--sample-size", type=int, default=0,
+                             help="Number of matching interactions to reservoir-sample; 0 uses all ratings")
         parser.add_argument("--min-ratings", type=int, default=5,
                              help="Minimum ratings a book needs to be included")
         parser.add_argument("--top-k", type=int, default=15,
@@ -36,8 +44,8 @@ class Command(BaseCommand):
         parser.add_argument("--bias-regularization", type=float, default=0.01,
                             help="L2 regularization for ALS bias terms, kept lighter than factor "
                                  "regularization so bias can absorb popularity signal cleanly")
-        parser.add_argument("--block-size", type=int, default=2000,
-                            help="Row-block size for batched ALS-factor similarity computation")
+        parser.add_argument("--block-size", type=int, default=256,
+                            help="Number of books per similarity computation block")
 
     def load_valid_books(self):
         self.stdout.write("Loading edition-to-canonical mapping...")
@@ -54,35 +62,64 @@ class Command(BaseCommand):
         self.stdout.write(f"Mapped {len(edition_to_canonical):,} editions onto {canonical_count:,} canonical books")
         return edition_to_canonical
 
-    def sample_interactions(self, interactions_path, sample_size, edition_to_canonical):
-        self.stdout.write(f"Reservoir-sampling up to {sample_size:,} matching interactions...")
-        reservoir = []
-        seen = 0
+    def load_csv_mapping(self, mapping_path, edition_to_canonical):
+        mapping = {}
+        try:
+            with open(mapping_path, encoding="utf-8", newline="") as f:
+                reader = csv.DictReader(f)
+                if not {"book_id_csv", "book_id"}.issubset(reader.fieldnames or []):
+                    raise CommandError("Book mapping must contain book_id_csv and book_id columns")
+                for record in reader:
+                    canonical_pk = edition_to_canonical.get(record["book_id"])
+                    if canonical_pk is not None:
+                        mapping[record["book_id_csv"]] = canonical_pk
+        except OSError as exc:
+            raise CommandError(f"Cannot read book ID mapping: {exc}") from exc
+        if not mapping:
+            raise CommandError("Book ID mapping has no matches in the catalog")
+        self.stdout.write(f"Mapped {len(mapping):,} CSV book IDs to the catalog")
+        return mapping
 
+    def iter_interactions(self, interactions_path, csv_to_canonical):
+        seen = 0
         with open(interactions_path, "r", encoding="utf-8", newline="") as f:
-            reader = csv.DictReader(f)
+            reader = csv.reader(f)
+            header = next(reader, [])
+            if not {"user_id", "book_id", "rating"}.issubset(header):
+                raise CommandError("Interactions must contain user_id, book_id and rating columns")
+            user_column, book_column, rating_column = (header.index(name) for name in ("user_id", "book_id", "rating"))
             for record in reader:
-                book_id = record.get("book_id")
                 try:
-                    rating = int(record.get("rating", 0))
-                except (TypeError, ValueError):
+                    book_id = record[book_column]
+                    rating = int(record[rating_column])
+                    user_id = record[user_column]
+                except (IndexError, ValueError):
                     continue
 
-                canonical_pk = edition_to_canonical.get(book_id)
-                if canonical_pk is None or rating == 0:
+                canonical_pk = csv_to_canonical.get(book_id)
+                if canonical_pk is None or not 1 <= rating <= 5:
                     continue
 
                 seen += 1
-                parsed = {"user_id": record["user_id"], "canonical_pk": canonical_pk, "rating": rating}
-                if len(reservoir) < sample_size:
-                    reservoir.append(parsed)
-                else:
-                    j = random.randint(0, seen - 1)
-                    if j < sample_size:
-                        reservoir[j] = parsed
-
-                if seen % 500_000 == 0:
+                yield {"user_id": user_id, "canonical_pk": canonical_pk, "rating": rating}
+                if seen % 5_000_000 == 0:
                     self.stdout.write(f"  matched {seen:,} interactions so far...")
+        self.stdout.write(f"Matched {seen:,} rated interactions in the complete CSV")
+
+    def sample_interactions(self, interactions_path, sample_size, csv_to_canonical, seed=42):
+        records = self.iter_interactions(interactions_path, csv_to_canonical)
+        if sample_size == 0:
+            return records
+        self.stdout.write(f"Reservoir-sampling up to {sample_size:,} matching interactions...")
+        reservoir = []
+        rng = random.Random(seed)
+        for seen, parsed in enumerate(records, start=1):
+            if len(reservoir) < sample_size:
+                reservoir.append(parsed)
+            else:
+                j = rng.randint(0, seen - 1)
+                if j < sample_size:
+                    reservoir[j] = parsed
 
         self.stdout.write(f"Sampled {len(reservoir):,} interactions")
         return reservoir
@@ -90,7 +127,7 @@ class Command(BaseCommand):
     def build_matrix(self, interactions):
         self.stdout.write("Building rating matrix...")
         user_index, book_index = {}, {}
-        rows, cols, data = [], [], []
+        rows, cols, data = array("i"), array("i"), array("f")
 
         for record in interactions:
             user_id, canonical_pk, rating = record["user_id"], record["canonical_pk"], record["rating"]
@@ -104,7 +141,14 @@ class Command(BaseCommand):
 
         n_users, n_books = len(user_index), len(book_index)
         self.stdout.write(f"Matrix: {n_users:,} users x {n_books:,} canonical books, {len(data):,} ratings")
+        if not data:
+            raise CommandError("No rated interactions matched; existing neighbors were preserved")
+        rows = np.frombuffer(rows, dtype=np.int32)
+        cols = np.frombuffer(cols, dtype=np.int32)
+        data = np.frombuffer(data, dtype=np.float32)
         matrix = sparse.csr_matrix((data, (rows, cols)), shape=(n_users, n_books))
+        counts = sparse.csr_matrix((np.ones(len(data), dtype=np.float32), (rows, cols)), shape=matrix.shape)
+        matrix.data /= counts.data
         return matrix, book_index
 
     def filter_sparse_books(self, matrix, book_index, min_ratings):
@@ -243,24 +287,20 @@ class Command(BaseCommand):
         return results
 
     def extract_top_k(self, similarity, co_occurrence, index_to_id, top_k, min_co_raters,
-                      relative_threshold, absolute_floor):
+                      relative_threshold, absolute_floor, row_offset=0):
         self.stdout.write(
             f"Extracting top {top_k} neighbors per book "
             f"(min {min_co_raters} shared raters, relative={relative_threshold}, floor={absolute_floor})..."
         )
         results = {}
         n_books = similarity.shape[0]
+        similarity = similarity.multiply(co_occurrence >= min_co_raters).tocsr()
+        similarity.eliminate_zeros()
 
         for i in range(n_books):
             row = similarity.getrow(i)
-            co_row = co_occurrence.getrow(i)
             neighbor_indices, neighbor_scores = row.indices, row.data
-            co_lookup = dict(zip(co_row.indices, co_row.data))
-
-            valid_mask = np.array([
-                idx != i and co_lookup.get(idx, 0) >= min_co_raters
-                for idx in neighbor_indices
-            ])
+            valid_mask = neighbor_indices != i + row_offset
             neighbor_indices, neighbor_scores = neighbor_indices[valid_mask], neighbor_scores[valid_mask]
             if len(neighbor_scores) == 0:
                 continue
@@ -273,7 +313,7 @@ class Command(BaseCommand):
                 continue
 
             order = np.argsort(neighbor_scores)[::-1][:top_k]
-            results[index_to_id[i]] = [
+            results[index_to_id[i + row_offset]] = [
                 {"book_id": index_to_id[neighbor_indices[j]], "score": round(float(neighbor_scores[j]), 4)}
                 for j in order
             ]
@@ -291,24 +331,70 @@ class Command(BaseCommand):
 
         self.stdout.write(f"Updating {len(books_to_update):,} books...")
         batch_size = 2000
-        for start in range(0, len(books_to_update), batch_size):
-            batch = books_to_update[start:start + batch_size]
-            with transaction.atomic():
+        with transaction.atomic():
+            Book.objects.exclude(similar_books=[]).update(similar_books=[])
+            for start in range(0, len(books_to_update), batch_size):
+                batch = books_to_update[start:start + batch_size]
                 Book.objects.bulk_update(batch, ["similar_books"], batch_size=batch_size)
-            self.stdout.write(f"  updated {min(start + batch_size, len(books_to_update)):,}")
+                self.stdout.write(f"  updated {min(start + batch_size, len(books_to_update)):,}")
+            transaction.on_commit(cache.clear)
 
         self.stdout.write(self.style.SUCCESS("Done."))
 
     def handle(self, *args, **options):
+        if options["sample_size"] < 0 or options["block_size"] < 1:
+            raise CommandError("Sample size must be nonnegative and block size must be positive")
         edition_to_canonical = self.load_valid_books()
-        interactions = self.sample_interactions(
-            options["interactions_path"], options["sample_size"], edition_to_canonical
+        mapping_path = options["book_id_map"] or Path(options["interactions_path"]).with_name("book_id_map.csv")
+        csv_to_canonical = self.load_csv_mapping(
+            mapping_path,
+            edition_to_canonical,
         )
-        matrix, book_index = self.build_matrix(interactions)
-        filtered_matrix, index_to_id = self.filter_sparse_books(matrix, book_index, options["min_ratings"])
-        similarity, co_occurrence = self.compute_similarity(filtered_matrix)
-        results = self.extract_top_k(
-            similarity, co_occurrence, index_to_id, options["top_k"], options["min_co_raters"],
-            options["relative_threshold"], options["absolute_floor"],
-        )
+        fingerprint_data = {
+            "version": 1,
+            "catalog": sorted(csv_to_canonical.items()),
+            "sample_size": options["sample_size"], "seed": options["seed"], "min_ratings": options["min_ratings"],
+            "files": [(str(Path(p).resolve()), Path(p).stat().st_size, Path(p).stat().st_mtime_ns)
+                      for p in (options["interactions_path"], mapping_path)],
+        }
+        fingerprint = hashlib.sha256(json.dumps(fingerprint_data).encode()).hexdigest()
+        cache_path = Path(options["matrix_cache"]) if options["matrix_cache"] else None
+        filtered_matrix = None
+        if cache_path and cache_path.exists():
+            with np.load(cache_path, allow_pickle=False) as saved:
+                if saved["fingerprint"].item() == fingerprint:
+                    filtered_matrix = sparse.csr_matrix((saved["data"], saved["indices"], saved["indptr"]), shape=tuple(saved["shape"]))
+                    index_to_id = dict(enumerate(saved["book_ids"].tolist()))
+                    self.stdout.write("Loaded validated rating matrix from cache")
+        if filtered_matrix is None:
+            interactions = self.sample_interactions(
+                options["interactions_path"], options["sample_size"], csv_to_canonical, options["seed"]
+            )
+            matrix, book_index = self.build_matrix(interactions)
+            del interactions
+            filtered_matrix, index_to_id = self.filter_sparse_books(matrix, book_index, options["min_ratings"])
+            del matrix
+            if cache_path:
+                temporary = cache_path.with_suffix(".tmp")
+                with temporary.open("wb") as f:
+                    np.savez(f, data=filtered_matrix.data, indices=filtered_matrix.indices, indptr=filtered_matrix.indptr,
+                             shape=filtered_matrix.shape, book_ids=list(index_to_id.values()), fingerprint=fingerprint)
+                temporary.replace(cache_path)
+                self.stdout.write(f"Saved rating matrix to {cache_path}")
+        norms = np.sqrt(np.asarray(filtered_matrix.multiply(filtered_matrix).sum(axis=0)).ravel())
+        normalized = (filtered_matrix @ sparse.diags(1 / norms)).tocsc()
+        binary = (filtered_matrix != 0).astype(np.int32).tocsc()
+        del filtered_matrix
+        normalized_rows = normalized.tocsr()
+        binary_rows = binary.tocsr()
+        results = {}
+        for start in range(0, normalized.shape[1], options["block_size"]):
+            end = start + options["block_size"]
+            similarity = (normalized[:, start:end].T @ normalized_rows).tocsr()
+            co_occurrence = (binary[:, start:end].T @ binary_rows).tocsr()
+            results.update(self.extract_top_k(
+                similarity, co_occurrence, index_to_id, options["top_k"], options["min_co_raters"],
+                options["relative_threshold"], options["absolute_floor"], row_offset=start,
+            ))
+            self.stdout.write(f"Processed {min(end, normalized.shape[1]):,} / {normalized.shape[1]:,} books")
         self.save_results(results)

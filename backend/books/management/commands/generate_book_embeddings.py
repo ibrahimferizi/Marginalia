@@ -1,8 +1,8 @@
 from django.core.management.base import BaseCommand
 
 from books.models import Book
+from books.embeddings import MODEL_NAME, build_input_text, get_embedding_model, save_book_embeddings
 
-MODEL_NAME = "all-MiniLM-L6-v2"
 BATCH_SIZE = 64
 
 
@@ -10,6 +10,7 @@ class Command(BaseCommand):
     help = "Generate and store embeddings for canonical books using sentence-transformers."
 
     def add_arguments(self, parser):
+        parser.add_argument("--book-id", type=int, action="append")
         parser.add_argument(
             "--force",
             action="store_true",
@@ -23,17 +24,15 @@ class Command(BaseCommand):
         )
 
     def build_input_text(self, book):
-        genre_names = ", ".join(book.genres.keys()) if book.genres else ""
-        parts = [book.title, genre_names, book.description]
-        return ". ".join(p.strip() for p in parts if p and p.strip())
+        return build_input_text(book)
 
     def handle(self, *args, **options):
         force = options["force"]
         limit = options["limit"]
 
-        from sentence_transformers import SentenceTransformer
-
         queryset = Book.objects.filter(canonical_book__isnull=True)
+        if options["book_id"]:
+            queryset = queryset.filter(id__in=options["book_id"])
         if not force:
             queryset = queryset.filter(embedding__isnull=True)
 
@@ -48,7 +47,7 @@ class Command(BaseCommand):
             return
 
         self.stdout.write(f"Loading model '{MODEL_NAME}'...")
-        model = SentenceTransformer(MODEL_NAME)
+        model = get_embedding_model()
 
         self.stdout.write(f"Embedding {total} canonical books...")
 
@@ -76,7 +75,7 @@ class Command(BaseCommand):
             for book, vector in zip(valid_books, vectors):
                 book.embedding = vector
 
-            Book.objects.bulk_update(valid_books, ["embedding"], batch_size=BATCH_SIZE)
+            save_book_embeddings(valid_books)
             embedded_count += len(valid_books)
 
             self.stdout.write(f"  {min(start + BATCH_SIZE, total)}/{total} processed")

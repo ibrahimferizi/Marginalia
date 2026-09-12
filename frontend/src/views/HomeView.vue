@@ -80,11 +80,15 @@ function runSearch() {
 
 function formatReason(reason) {
   if (!reason) return ''
+  if (reason.type === 'hybrid') {
+    return `Matches your reading interests, with reader overlap from ${reason.source_book.title}`
+  }
   if (reason.type === 'content') {
+    if (reason.method === 'embedding') return 'Based on themes in books you rated'
     return `Because you enjoy ${reason.shared_genres.join(' and ')}`
   }
   if (reason.type === 'collaborative') {
-    return `Because you liked ${reason.source_book.title}`
+    return `Readers of ${reason.source_book.title} also rated this`
   }
   return ''
 }

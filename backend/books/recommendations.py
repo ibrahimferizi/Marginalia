@@ -1,10 +1,21 @@
 import math
 from django.core.cache import cache
+from django.db.models import F, Q, Value
 from .models import Book
 import numpy as np
 from pgvector.django import CosineDistance
 
 CACHE_TIMEOUT = None
+
+STUDY_AID_PATTERN = r'\m(monarch\s+notes|cliffs?\s*notes|spark\s*notes)\M|\msummary\s*(&\s*)?study\s+guide\M|\mby\M.+\mstudy\s+guide\M'
+
+
+def multi_volume_candidates():
+    return (
+        Q(title__iregex=r'\m(box(ed)?[ -]*sets?|omnib(us|uses)|bundles?)\M')
+        | Q(title__iregex=r'\([^)]*#\s*[0-9]+\s*[-â€“]\s*[0-9]+[^)]*\)')
+        | (Q(title__iregex=r'\mtrilog(y|ies)\M') & Q(description__iregex=r'\m(this|one|single) volume (includes|contains|collects)\M'))
+    )
 
 def cosine_similarity(vec_a: dict, vec_b: dict) -> float:
     shared_keys = set(vec_a) & set(vec_b)
@@ -26,31 +37,35 @@ def cosine_similarity_vectors(vec_a, vec_b):
         return 0.0
     return float(np.dot(a, b) / (norm_a * norm_b))
 
-def build_collab_candidates(user, min_rating=4):
-    reviews = user.reviews.select_related("book").filter(rating__gte=min_rating)
-    weighted_sums = {}
-    weight_totals = {}
+def build_collab_candidates(user, candidates):
+    reviews = user.reviews.select_related("book", "book__canonical_book").filter(rating__gte=3).order_by("book_id")
+    seeds = {}
+    weights = {3: 0.2, 4: 0.8, 5: 1.0}
+    for review in reviews:
+        book = review.book.canonical_book or review.book
+        key = ("work", book.work_id) if book.work_id else ("book", book.id)
+        if key not in seeds or review.rating > seeds[key][1]:
+            seeds[key] = (book, review.rating)
+    neighbor_ids = {n["book_id"] for book, _ in seeds.values() for n in book.similar_books or [] if n["score"] > 0}
+    eligible = set(candidates.filter(id__in=neighbor_ids).values_list("id", flat=True))
+    support = {}
     top_source = {}
     books_with_collab_data = 0
-
-    for review in reviews:
-        neighbors = review.book.similar_books or []
-        if neighbors:
+    confidence = 0.0
+    for book, rating in seeds.values():
+        neighbors = [n for n in book.similar_books or [] if n["book_id"] in eligible and n["score"] > 0]
+        if neighbors and rating >= 4:
             books_with_collab_data += 1
+        if neighbors:
+            confidence = max(confidence, weights[rating])
         for neighbor in neighbors:
             book_id = neighbor["book_id"]
-            score = neighbor["score"]
-            weighted_sums[book_id] = weighted_sums.get(book_id, 0) + score * review.rating
-            weight_totals[book_id] = weight_totals.get(book_id, 0) + score
-
+            score = weights[rating] * neighbor["score"]
+            support[book_id] = support.get(book_id, 0.0) + score
             if book_id not in top_source or score > top_source[book_id][1]:
-                top_source[book_id] = (review.book, score)
-
-    predictions = {
-        book_id: weighted_sums[book_id] / weight_totals[book_id]
-        for book_id in weighted_sums
-        if weight_totals[book_id] > 0
-    }
+                top_source[book_id] = (book, score)
+    peak = max(support.values(), default=0.0)
+    predictions = {bid: confidence * value / peak for bid, value in support.items()} if peak else {}
     return predictions, books_with_collab_data, top_source
 
 def compute_alpha(books_with_collab_data):
@@ -61,9 +76,49 @@ def shared_genres(vec_a: dict, vec_b: dict, top_n=2):
     ranked = sorted(shared, key=lambda k: vec_a[k] * vec_b[k], reverse=True)
     return ranked[:top_n]
 
+def exact_content_candidates(queryset, embedding, limit=500):
+    return (
+        queryset.filter(embedding__isnull=False)
+        .annotate(distance=CosineDistance("embedding", embedding))
+        .order_by((Value(1.0) - F("distance")).desc(), "id")[:limit]
+    )
+
+
+def recommendation_candidates(reviewed_ids, include_study_aids=False):
+    reviewed_ids = set(reviewed_ids)
+    reviewed = list(Book.objects.filter(id__in=reviewed_ids).values_list("canonical_book_id", "work_id"))
+    canonical_ids = {canonical_id for canonical_id, _ in reviewed if canonical_id is not None}
+    work_ids = {work_id for _, work_id in reviewed if work_id}
+    work_ids.update(
+        Book.objects.filter(id__in=canonical_ids).exclude(work_id="").values_list("work_id", flat=True)
+    )
+    candidates = (
+        Book.objects.filter(canonical_book__isnull=True)
+        .exclude(id__in=reviewed_ids | canonical_ids)
+        .exclude(work_id__in=work_ids)
+    )
+    if not include_study_aids:
+        candidates = candidates.exclude(title__iregex=STUDY_AID_PATTERN)
+    return candidates
+
+
+def unique_work_books(books, limit):
+    result = []
+    seen = set()
+    for book in books:
+        if len(result) >= limit:
+            break
+        key = ("work", book.work_id) if book.work_id else ("book", book.id)
+        if key not in seen:
+            seen.add(key)
+            result.append(book)
+    return result
+
+
 def hybrid_recommendations(user, limit=20, content_pool_size=500):
-    cache_key = f"recommendations:hybrid:v4:{user.id}"
-    cached = cache.get(cache_key)
+    cache_key = f"recommendations:hybrid:v8:{user.id}"
+    use_cache = limit == 20 and content_pool_size == 500
+    cached = cache.get(cache_key) if use_cache else None
     if cached is not None:
         book_ids = [entry["id"] for entry in cached]
         books = Book.objects.filter(id__in=book_ids)
@@ -76,26 +131,19 @@ def hybrid_recommendations(user, limit=20, content_pool_size=500):
                 result.append(book)
         return result
 
-    if not user.taste_vector:
-        return []
-
     already_reviewed = set(user.reviews.values_list("book_id", flat=True))
-    collab_predictions, books_with_collab_data, top_source = build_collab_candidates(user)
-    alpha = compute_alpha(books_with_collab_data)
-
-    base_qs = Book.objects.filter(canonical_book__isnull=True).exclude(id__in=already_reviewed)
-    fields = ("id", "title", "author", "genres", "avg_rating", "ratings_count")
+    base_qs = recommendation_candidates(already_reviewed)
+    collab_predictions, books_with_collab_data, top_source = build_collab_candidates(user, base_qs)
+    alpha = (0.85 if books_with_collab_data < 2 else 0.7) if collab_predictions else 1.0
+    if user.taste_embedding is None:
+        alpha = 0.0
+    fields = ("id", "title", "author", "genres", "avg_rating", "ratings_count", "work_id")
 
     candidates_by_id = {}
     taste_embedding = user.taste_embedding
 
     if taste_embedding is not None:
-        content_qs = (
-            base_qs.filter(embedding__isnull=False)
-            .annotate(distance=CosineDistance("embedding", taste_embedding))
-            .order_by("distance")
-            .only(*fields)[:content_pool_size]
-        )
+        content_qs = exact_content_candidates(base_qs.only(*fields), taste_embedding, content_pool_size)
         for book in content_qs:
             candidates_by_id[book.id] = (book, 1.0 - book.distance)
 
@@ -118,35 +166,33 @@ def hybrid_recommendations(user, limit=20, content_pool_size=500):
 
     scored = []
     for book, content_score in candidates_by_id.values():
-        raw_collab = collab_predictions.get(book.id, 0) / 5.0
+        raw_collab = collab_predictions.get(book.id, 0)
         weighted_content = alpha * content_score
         weighted_collab = (1 - alpha) * raw_collab
         final_score = weighted_content + weighted_collab
 
         if final_score > 0:
-            content_share = content_score
-            collab_share = raw_collab
-
-            if collab_share > content_share and book.id in top_source:
+            if weighted_collab > 0 and book.id in top_source:
                 source_book, _ = top_source[book.id]
                 book.recommendation_reason = {
-                    "type": "collaborative",
+                    "type": "hybrid" if weighted_content > 0 else "collaborative",
                     "source_book": {"id": source_book.id, "title": source_book.title},
                 }
             else:
                 book.recommendation_reason = {
                     "type": "content",
-                    "shared_genres": shared_genres(user.taste_vector, book.genres or {}),
+                    "method": "embedding",
                 }
             scored.append((final_score, book))
 
-    scored.sort(key=lambda pair: (pair[0], pair[1].ratings_count), reverse=True)
-    top_books = [book for _, book in scored[:limit]]
+    scored.sort(key=lambda pair: (pair[0], pair[1].ratings_count, -pair[1].id), reverse=True)
+    top_books = unique_work_books((book for _, book in scored), limit)
 
     cache_payload = [
         {"id": b.id, "reason": b.recommendation_reason} for b in top_books
     ]
-    cache.set(cache_key, cache_payload, timeout=CACHE_TIMEOUT)
+    if use_cache:
+        cache.set(cache_key, cache_payload, timeout=CACHE_TIMEOUT)
     return top_books
 
 def content_similar_books(book, limit=15):

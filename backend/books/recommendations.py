@@ -1,21 +1,13 @@
 import math
 from django.core.cache import cache
-from django.db.models import F, Q, Value
+from django.db.models import F, Value
 from .models import Book
-import numpy as np
 from pgvector.django import CosineDistance
 
 CACHE_TIMEOUT = None
 
 STUDY_AID_PATTERN = r'\m(monarch\s+notes|cliffs?\s*notes|spark\s*notes)\M|\msummary\s*(&\s*)?study\s+guide\M|\mby\M.+\mstudy\s+guide\M'
 
-
-def multi_volume_candidates():
-    return (
-        Q(title__iregex=r'\m(box(ed)?[ -]*sets?|omnib(us|uses)|bundles?)\M')
-        | Q(title__iregex=r'\([^)]*#\s*[0-9]+\s*[-â€“]\s*[0-9]+[^)]*\)')
-        | (Q(title__iregex=r'\mtrilog(y|ies)\M') & Q(description__iregex=r'\m(this|one|single) volume (includes|contains|collects)\M'))
-    )
 
 def cosine_similarity(vec_a: dict, vec_b: dict) -> float:
     shared_keys = set(vec_a) & set(vec_b)
@@ -26,16 +18,6 @@ def cosine_similarity(vec_a: dict, vec_b: dict) -> float:
         return 0.0
     return dot / (norm_a * norm_b)
 
-def cosine_similarity_vectors(vec_a, vec_b):
-    if vec_a is None or vec_b is None:
-        return 0.0
-    a = np.asarray(vec_a, dtype=float)
-    b = np.asarray(vec_b, dtype=float)
-    norm_a = np.linalg.norm(a)
-    norm_b = np.linalg.norm(b)
-    if norm_a == 0 or norm_b == 0:
-        return 0.0
-    return float(np.dot(a, b) / (norm_a * norm_b))
 
 def build_collab_candidates(user, candidates):
     reviews = user.reviews.select_related("book", "book__canonical_book").filter(rating__gte=3).order_by("book_id")
@@ -68,8 +50,6 @@ def build_collab_candidates(user, candidates):
     predictions = {bid: confidence * value / peak for bid, value in support.items()} if peak else {}
     return predictions, books_with_collab_data, top_source
 
-def compute_alpha(books_with_collab_data):
-    return max(0.5, 1 - 0.15 * books_with_collab_data)
 
 def shared_genres(vec_a: dict, vec_b: dict, top_n=2):
     shared = set(vec_a) & set(vec_b)
@@ -115,8 +95,23 @@ def unique_work_books(books, limit):
     return result
 
 
+def preferred_editions(books):
+    works = {book.work_id for book in books if book.work_id}
+    preferred = {}
+    editions = Book.objects.filter(work_id__in=works, canonical_book__isnull=True, language_code__iregex=r"^(en|eng)([-_][a-z]{2})?$").order_by("-ratings_count", "id")
+    for edition in editions:
+        preferred.setdefault(edition.work_id, edition)
+    result = []
+    for book in books:
+        edition = preferred.get(book.work_id, book)
+        if hasattr(book, "recommendation_reason"):
+            edition.recommendation_reason = book.recommendation_reason
+        result.append(edition)
+    return result
+
+
 def hybrid_recommendations(user, limit=20, content_pool_size=500):
-    cache_key = f"recommendations:hybrid:v8:{user.id}"
+    cache_key = f"recommendations:hybrid:v9:{user.id}"
     use_cache = limit == 20 and content_pool_size == 500
     cached = cache.get(cache_key) if use_cache else None
     if cached is not None:
@@ -186,7 +181,7 @@ def hybrid_recommendations(user, limit=20, content_pool_size=500):
             scored.append((final_score, book))
 
     scored.sort(key=lambda pair: (pair[0], pair[1].ratings_count, -pair[1].id), reverse=True)
-    top_books = unique_work_books((book for _, book in scored), limit)
+    top_books = preferred_editions(unique_work_books((book for _, book in scored), limit))
 
     cache_payload = [
         {"id": b.id, "reason": b.recommendation_reason} for b in top_books
@@ -196,8 +191,8 @@ def hybrid_recommendations(user, limit=20, content_pool_size=500):
     return top_books
 
 def content_similar_books(book, limit=15):
-    cache_key = f"similar_books:content:v2:{book.id}"
-    cached = cache.get(cache_key)
+    cache_key = f"similar_books:content:v3:{book.id}"
+    cached = cache.get(cache_key) if limit == 15 else None
     if cached is not None:
         book_ids = [entry["id"] for entry in cached]
         books = Book.objects.filter(id__in=book_ids)
@@ -213,9 +208,7 @@ def content_similar_books(book, limit=15):
     if not book.genres:
         return []
 
-    candidates = Book.objects.filter(canonical_book__isnull=True).exclude(
-        id=book.id
-    ).only("id", "title", "author", "genres", "avg_rating", "ratings_count")
+    candidates = recommendation_candidates({book.id}).only("id", "title", "author", "genres", "avg_rating", "ratings_count", "work_id")
 
     scored = []
     for candidate in candidates.iterator(chunk_size=2000):
@@ -228,27 +221,30 @@ def content_similar_books(book, limit=15):
             scored.append((score, candidate))
 
     scored.sort(key=lambda pair: (pair[0], pair[1].ratings_count), reverse=True)
-    top_books = [b for _, b in scored[:limit]]
+    top_books = preferred_editions(unique_work_books((b for _, b in scored), limit))
 
     cache_payload = [
         {"id": b.id, "reason": b.recommendation_reason} for b in top_books
     ]
-    cache.set(cache_key, cache_payload, timeout=None)
+    if limit == 15:
+        cache.set(cache_key, cache_payload, timeout=None)
     return top_books
 
 
 def similar_books_for(book, limit=15):
+    book = book.canonical_book or book
     neighbors = book.similar_books or []
     if neighbors:
-        neighbor_ids = [n["book_id"] for n in neighbors[:limit]]
-        books = Book.objects.filter(id__in=neighbor_ids)
+        neighbor_ids = [n["book_id"] for n in neighbors]
+        books = recommendation_candidates({book.id}).filter(id__in=neighbor_ids)
         books_by_id = {b.id: b for b in books}
         result = []
-        for n in neighbors[:limit]:
+        for n in neighbors:
             candidate = books_by_id.get(n["book_id"])
             if candidate:
                 candidate.recommendation_reason = {"type": "collaborative"}
                 result.append(candidate)
-        return result
+        if result:
+            return preferred_editions(unique_work_books(result, limit))
 
     return content_similar_books(book, limit=limit)

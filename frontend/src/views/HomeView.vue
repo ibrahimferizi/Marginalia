@@ -1,4 +1,5 @@
 <script setup>
+import { API_BASE } from '../api'
 import { ref, onMounted, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
@@ -22,7 +23,7 @@ const recommendedError = ref(null)
 
 const searchMode = ref('keyword')
 
-const API_BASE = 'http://127.0.0.1:8000/api/books/'
+const BOOKS_API = `${API_BASE}/books/`
 
 async function fetchBooks(url) {
   loading.value = true
@@ -55,7 +56,7 @@ async function fetchRecommended() {
   recommendedLoading.value = true
   recommendedError.value = null
   try {
-    const response = await fetch(`${API_BASE}recommended/`, {
+    const response = await fetch(`${BOOKS_API}recommended/`, {
       credentials: 'include',
     })
     if (!response.ok) {
@@ -99,13 +100,13 @@ watch(
     search.value = searchQuery ?? ''
     searchMode.value = mode ?? 'keyword'
     if (!searchQuery) {
-      fetchBooks(API_BASE)
+      fetchBooks(BOOKS_API)
       return
     }
     const url =
       searchMode.value === 'semantic'
-        ? `${API_BASE}semantic_search/?q=${encodeURIComponent(searchQuery)}`
-        : `${API_BASE}?search=${encodeURIComponent(searchQuery)}`
+        ? `${BOOKS_API}semantic_search/?q=${encodeURIComponent(searchQuery)}`
+        : `${BOOKS_API}?search=${encodeURIComponent(searchQuery)}`
     fetchBooks(url)
   },
   { immediate: true },
@@ -130,7 +131,7 @@ onMounted(() => {
       <ul v-else>
         <li v-for="book in recommended" :key="book.id">
           <img :src="book.cover_url || placeholderCover" :alt="book.title" width="60" />
-          <RouterLink :to="`/books/${book.id}`">{{ book.title }}</RouterLink> — {{ book.author }}
+          <RouterLink :to="`/books/${book.id}`">{{ book.title }}</RouterLink>” — {{ book.author }}
           <p v-if="book.recommendation_reason" class="reason">
             {{ formatReason(book.recommendation_reason) }}
           </p>
@@ -158,7 +159,7 @@ onMounted(() => {
       <ul>
         <li v-for="book in books" :key="book.id">
           <img :src="book.cover_url || placeholderCover" :alt="book.title" width="60" />
-          <RouterLink :to="`/books/${book.id}`">{{ book.title }}</RouterLink> — {{ book.author }}
+          <RouterLink :to="`/books/${book.id}`">{{ book.title }}</RouterLink>” — {{ book.author }}
         </li>
       </ul>
 

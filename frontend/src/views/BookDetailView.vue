@@ -7,7 +7,7 @@ import placeholderCover from '@/assets/placeholder-cover.png'
 const route = useRoute()
 const auth = useAuthStore()
 
-const API_BASE = 'http://127.0.0.1:8000/api'
+import { API_BASE } from '../api'
 
 const book = ref(null)
 const loading = ref(true)
@@ -228,7 +228,7 @@ watch(
       <p v-if="reviewsLoading">Loading reviews...</p>
       <ul v-else-if="reviews.length">
         <li v-for="review in reviews" :key="review.id">
-          <strong>{{ review.username }}</strong> — {{ review.rating }}/5
+          <RouterLink :to="{ name: 'public-profile', params: { username: review.username } }">{{ review.username }}</RouterLink> — {{ review.rating }}/5
           <p v-if="review.text">{{ review.text }}</p>
         </li>
       </ul>

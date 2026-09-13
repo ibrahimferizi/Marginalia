@@ -21,4 +21,7 @@ class ReviewViewSet(viewsets.ModelViewSet):
         book_id = self.request.query_params.get("book")
         if book_id:
             qs = qs.filter(book_id=book_id)
-        return qs
+        username = self.request.query_params.get("username")
+        if username:
+            qs = qs.filter(user__username=username)
+        return qs.order_by("-created_at", "-id")

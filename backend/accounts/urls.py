@@ -6,9 +6,11 @@ from .views import (
     MeView,
     RegisterView,
     UserProfileView,
+    ReadingStatsView,
 )
 
 urlpatterns = [
+    path("me/stats/", ReadingStatsView.as_view(), name="reading-stats"),
     path("register/", RegisterView.as_view(), name="register"),
     path("token/", CookieTokenObtainView.as_view(), name="token_obtain"),
     path("token/refresh/", CookieTokenRefreshView.as_view(), name="token_refresh"),

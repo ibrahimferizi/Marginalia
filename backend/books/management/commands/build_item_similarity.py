@@ -35,15 +35,6 @@ class Command(BaseCommand):
                             help="Keep neighbors scoring at least this fraction of the book's own best score")
         parser.add_argument("--absolute-floor", type=float, default=0.05,
                             help="Hard minimum similarity score regardless of relative threshold")
-        parser.add_argument("--n-factors", type=int, default=30,
-                            help="Number of latent factors for ALS")
-        parser.add_argument("--als-iterations", type=int, default=8,
-                            help="Number of ALS alternating iterations")
-        parser.add_argument("--regularization", type=float, default=0.1,
-                            help="L2 regularization strength for ALS")
-        parser.add_argument("--bias-regularization", type=float, default=0.01,
-                            help="L2 regularization for ALS bias terms, kept lighter than factor "
-                                 "regularization so bias can absorb popularity signal cleanly")
         parser.add_argument("--block-size", type=int, default=256,
                             help="Number of books per similarity computation block")
 
@@ -162,67 +153,6 @@ class Command(BaseCommand):
         new_index_to_id = {new_i: old_col_to_id[old_i] for new_i, old_i in enumerate(kept_columns)}
         return filtered, new_index_to_id
 
-    def train_als(self, matrix, n_factors, n_iterations, regularization, bias_regularization=None):
-        if bias_regularization is None:
-            bias_regularization = regularization
-        self.stdout.write(
-            f"Training ALS with bias terms ({n_factors} factors, {n_iterations} iterations, "
-            f"factor_reg={regularization}, bias_reg={bias_regularization})..."
-        )
-        n_users, n_items = matrix.shape
-        rng = np.random.default_rng(42)
-        P = rng.normal(scale=0.1, size=(n_users, n_factors))
-        Q = rng.normal(scale=0.1, size=(n_items, n_factors))
-        b_u = np.zeros(n_users)
-        b_i = np.zeros(n_items)
-        mu = float(matrix.data.mean())
-
-        user_rows = matrix.tocsr()
-        item_cols = matrix.tocsc()
-        reg_diag = np.full(n_factors + 1, regularization)
-        reg_diag[0] = bias_regularization
-        reg_eye = np.diag(reg_diag)
-
-        def rmse():
-            coo = user_rows.tocoo()
-            preds = mu + b_u[coo.row] + b_i[coo.col] + np.einsum('ij,ij->i', P[coo.row], Q[coo.col])
-            errors = coo.data - preds
-            return np.sqrt(np.mean(errors ** 2))
-
-        for iteration in range(n_iterations):
-            for u in range(n_users):
-                start, end = user_rows.indptr[u], user_rows.indptr[u + 1]
-                if start == end:
-                    continue
-                item_idx = user_rows.indices[start:end]
-                ratings = user_rows.data[start:end]
-                residual = ratings - mu - b_i[item_idx]
-
-                Q_aug = np.hstack([np.ones((len(item_idx), 1)), Q[item_idx]])
-                A = Q_aug.T @ Q_aug + reg_eye
-                b = Q_aug.T @ residual
-                solution = np.linalg.solve(A, b)
-                b_u[u] = solution[0]
-                P[u] = solution[1:]
-
-            for i in range(n_items):
-                start, end = item_cols.indptr[i], item_cols.indptr[i + 1]
-                if start == end:
-                    continue
-                user_idx = item_cols.indices[start:end]
-                ratings = item_cols.data[start:end]
-                residual = ratings - mu - b_u[user_idx]
-
-                P_aug = np.hstack([np.ones((len(user_idx), 1)), P[user_idx]])
-                A = P_aug.T @ P_aug + reg_eye
-                b = P_aug.T @ residual
-                solution = np.linalg.solve(A, b)
-                b_i[i] = solution[0]
-                Q[i] = solution[1:]
-
-            self.stdout.write(f"  completed iteration {iteration + 1}/{n_iterations}, train RMSE: {rmse():.4f}")
-
-        return Q
 
     def compute_co_occurrence(self, matrix):
         self.stdout.write("Computing co-rater overlap counts...")
@@ -241,50 +171,6 @@ class Command(BaseCommand):
                           f"{similarity.nnz:,} nonzero entries")
         return similarity, co_occurrence
 
-    def compute_als_similarity_blocked(self, Q, co_occurrence, index_to_id, top_k, min_co_raters,
-                                       relative_threshold, absolute_floor, block_size=2000):
-        self.stdout.write(f"Computing ALS-factor similarity in blocks of {block_size}...")
-        n_items = Q.shape[0]
-        norms = np.linalg.norm(Q, axis=1)
-        norms[norms == 0] = 1
-        Q_norm = Q / norms[:, None]
-
-        results = {}
-        for start in range(0, n_items, block_size):
-            end = min(start + block_size, n_items)
-            block_sim = Q_norm[start:end] @ Q_norm.T
-
-            for local_i, i in enumerate(range(start, end)):
-                co_row = co_occurrence.getrow(i)
-                co_lookup = dict(zip(co_row.indices, co_row.data))
-
-                candidate_indices = np.array([idx for idx in co_lookup if idx != i])
-                if len(candidate_indices) == 0:
-                    continue
-                candidate_scores = block_sim[local_i, candidate_indices]
-
-                valid_mask = np.array([co_lookup[idx] >= min_co_raters for idx in candidate_indices])
-                candidate_indices, candidate_scores = candidate_indices[valid_mask], candidate_scores[valid_mask]
-                if len(candidate_scores) == 0:
-                    continue
-
-                book_max = candidate_scores.max()
-                cutoff = max(absolute_floor, book_max * relative_threshold)
-                keep_mask = candidate_scores >= cutoff
-                candidate_indices, candidate_scores = candidate_indices[keep_mask], candidate_scores[keep_mask]
-                if len(candidate_indices) == 0:
-                    continue
-
-                order = np.argsort(candidate_scores)[::-1][:top_k]
-                results[index_to_id[i]] = [
-                    {"book_id": index_to_id[candidate_indices[j]], "score": round(float(candidate_scores[j]), 4)}
-                    for j in order
-                ]
-
-            del block_sim
-            self.stdout.write(f"  processed {end:,} / {n_items:,} books...")
-
-        return results
 
     def extract_top_k(self, similarity, co_occurrence, index_to_id, top_k, min_co_raters,
                       relative_threshold, absolute_floor, row_offset=0):

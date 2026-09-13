@@ -7,6 +7,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from .stats import reading_stats
 
 # Create your views here.
 
@@ -28,6 +29,13 @@ class UserProfileView(generics.RetrieveAPIView):
     serializer_class = UserProfileSerializer
     permission_classes = [permissions.AllowAny]
     lookup_field = "username"
+
+
+class ReadingStatsView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        return Response(reading_stats(request.user))
 
 COOKIE_KWARGS = {
     "httponly": True,

@@ -47,7 +47,7 @@ def _recalculate_taste_vector(user):
         (embedding_sum / embedding_weight_total).tolist() if embedding_weight_total > 0 else None
     )
     user.save(update_fields=["taste_vector", "taste_embedding"])
-    cache.delete(f"recommendations:hybrid:v8:{user.id}")
+    cache.delete(f"recommendations:hybrid:v9:{user.id}")
 
 @receiver(post_save, sender=Review)
 def update_book_rating_on_save(sender, instance, **kwargs):

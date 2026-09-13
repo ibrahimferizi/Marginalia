@@ -1,9 +1,11 @@
 from rest_framework import serializers
 from django.utils import timezone
 from .models import ReadingList
+from books.serializers import BookPreviewSerializer
 
 class ReadingListSerializer(serializers.ModelSerializer):
     book_title = serializers.CharField(source="book.title", read_only=True)
+    book_details = BookPreviewSerializer(source="book", read_only=True)
 
     class Meta:
         model = ReadingList
@@ -12,6 +14,7 @@ class ReadingListSerializer(serializers.ModelSerializer):
             "user",
             "book",
             "book_title",
+            "book_details",
             "status",
             "started_at",
             "finished_at",

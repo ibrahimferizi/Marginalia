@@ -191,6 +191,7 @@ watch(
       <h1>{{ book.title }}</h1>
       <p>by {{ book.author }}</p>
       <p v-if="book.published_year">Published: {{ book.published_year }}</p>
+      <p v-if="book.page_count">{{ book.page_count }} pages</p>
       <p>Rating: {{ book.avg_rating }} ({{ book.ratings_count }} ratings)</p>
       <p v-if="book.description">{{ book.description }}</p>
       <img :src="book.cover_url || placeholderCover" :alt="book.title" @error="handleCoverError" />

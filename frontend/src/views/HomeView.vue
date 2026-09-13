@@ -23,7 +23,8 @@ watch(() => auth.username, () => {
 
 <template>
   <main>
-    <h1>Marginalia</h1>
+    <p class="eyebrow">A life between the pages</p>
+    <h1>Your next chapter<br />starts here.</h1>
     <section>
       <div class="shelf-heading">
         <h2>{{ auth.isLoggedIn ? 'Popular books you haven’t read' : 'Popular with readers' }}</h2>

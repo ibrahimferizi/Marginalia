@@ -1,22 +1,28 @@
 @import './base.css';
 
-#app {
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 2rem;
-  font-weight: normal;
-}
-
-a,
-.green {
-  text-decoration: none;
-  color: hsla(160, 100%, 37%, 1);
-  transition: 0.4s;
-  padding: 3px;
-}
-
-@media (hover: hover) {
-  a:hover {
-    background-color: hsla(160, 100%, 37%, 0.2);
-  }
-}
+#app { max-width: 1440px; margin: 0 auto; padding: 0 clamp(20px, 5vw, 72px); }
+main { padding: 48px 0 80px; min-height: 70vh; }
+h1, h2, h3 { font-family: var(--font-display); color: var(--color-heading); font-weight: 400; line-height: 1.12; }
+h1 { font-size: clamp(36px, 5vw, 66px); letter-spacing: -.045em; margin: 0 0 24px; overflow-wrap: anywhere; }
+h2 { font-size: clamp(26px, 3vw, 36px); letter-spacing: -.03em; margin: 0 0 16px; }
+h3 { font-size: 24px; }
+p { margin: 0 0 16px; }
+a { color: var(--color-accent); text-decoration-thickness: 1px; text-underline-offset: 4px; }
+a:hover { color: #242d1a; }
+button, .button-link { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 42px; padding: 9px 18px; border: 1px solid var(--color-border); border-radius: 4px; background: transparent; color: var(--color-heading); cursor: pointer; text-decoration: none; font-size: 13px; transition: background .18s, border-color .18s; }
+button:hover:not(:disabled), .button-link:hover { background: var(--color-background-soft); border-color: var(--color-border-hover); }
+button:disabled { opacity: .45; cursor: default; }
+button + button { margin-left: 8px; }
+input, select, textarea { min-height: 44px; max-width: 100%; padding: 10px 12px; border: 1px solid var(--color-border); border-radius: 4px; background: #faf8f2; color: var(--color-heading); }
+textarea { min-height: 120px; width: 100%; resize: vertical; }
+form { display: flex; gap: 16px; align-items: end; flex-wrap: wrap; margin: 24px 0; }
+form label { display: grid; gap: 6px; }
+label { font-size: 13px; }
+main > label { display: inline-flex; flex-direction: column; gap: 6px; margin: 0 16px 20px 0; }
+section { margin-top: 40px; }
+small, .muted { color: var(--color-muted); }
+.eyebrow { font: 11px/1.5 'Courier New', monospace; text-transform: uppercase; letter-spacing: .18em; color: var(--color-muted); margin-bottom: 16px; }
+[role='alert'] { color: #8a3d31; }
+.shelf-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
+.shelf-heading h2 { margin: 0; }
+@media (max-width: 600px) { main { padding-top: 32px; } form { align-items: stretch; } form label { width: 100%; } }

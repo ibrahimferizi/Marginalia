@@ -1,6 +1,11 @@
 from rest_framework import serializers
 from .models import Book
 
+class BookPreviewSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Book
+        fields = ["id", "title", "author", "description", "cover_url", "published_year", "page_count", "avg_rating", "ratings_count"]
+
 class BookSerializer(serializers.ModelSerializer):
     recommendation_reason = serializers.SerializerMethodField()
     recommendation_sources = serializers.SerializerMethodField()
@@ -16,6 +21,7 @@ class BookSerializer(serializers.ModelSerializer):
             "cover_url",
             "genres",
             "published_year",
+            "page_count",
             "isbn",
             "avg_rating",
             "ratings_count",

@@ -19,7 +19,7 @@ def cosine_similarity(vec_a: dict, vec_b: dict) -> float:
     return dot / (norm_a * norm_b)
 
 
-def build_collab_candidates(user, candidates):
+def build_collab_candidates(user, candidates, include_sources=False):
     reviews = user.reviews.select_related("book", "book__canonical_book").filter(rating__gte=3).order_by("book_id")
     seeds = {}
     weights = {3: 0.2, 4: 0.8, 5: 1.0}
@@ -32,6 +32,7 @@ def build_collab_candidates(user, candidates):
     eligible = set(candidates.filter(id__in=neighbor_ids).values_list("id", flat=True))
     support = {}
     top_source = {}
+    sources = {}
     books_with_collab_data = 0
     confidence = 0.0
     for book, rating in seeds.values():
@@ -44,11 +45,13 @@ def build_collab_candidates(user, candidates):
             book_id = neighbor["book_id"]
             score = weights[rating] * neighbor["score"]
             support[book_id] = support.get(book_id, 0.0) + score
+            sources.setdefault(book_id, []).append({"id": book.id, "title": book.title, "contribution": score})
             if book_id not in top_source or score > top_source[book_id][1]:
                 top_source[book_id] = (book, score)
     peak = max(support.values(), default=0.0)
     predictions = {bid: confidence * value / peak for bid, value in support.items()} if peak else {}
-    return predictions, books_with_collab_data, top_source
+    result = (predictions, books_with_collab_data, top_source)
+    return (*result, sources) if include_sources else result
 
 
 def shared_genres(vec_a: dict, vec_b: dict, top_n=2):
@@ -86,7 +89,7 @@ def unique_work_books(books, limit):
     result = []
     seen = set()
     for book in books:
-        if len(result) >= limit:
+        if limit is not None and len(result) >= limit:
             break
         key = ("work", book.work_id) if book.work_id else ("book", book.id)
         if key not in seen:
@@ -106,13 +109,15 @@ def preferred_editions(books):
         edition = preferred.get(book.work_id, book)
         if hasattr(book, "recommendation_reason"):
             edition.recommendation_reason = book.recommendation_reason
+        if hasattr(book, "recommendation_sources"):
+            edition.recommendation_sources = book.recommendation_sources
         result.append(edition)
     return result
 
 
-def hybrid_recommendations(user, limit=20, content_pool_size=500):
-    cache_key = f"recommendations:hybrid:v9:{user.id}"
-    use_cache = limit == 20 and content_pool_size == 500
+def hybrid_recommendations(user, limit=20, content_pool_size=500, mode="hybrid"):
+    cache_key = f"recommendations:hybrid:v10:{user.id}"
+    use_cache = limit == 20 and content_pool_size == 500 and mode == "hybrid"
     cached = cache.get(cache_key) if use_cache else None
     if cached is not None:
         book_ids = [entry["id"] for entry in cached]
@@ -123,14 +128,19 @@ def hybrid_recommendations(user, limit=20, content_pool_size=500):
             book = books_by_id.get(entry["id"])
             if book:
                 book.recommendation_reason = entry["reason"]
+                book.recommendation_sources = entry.get("sources", [])
                 result.append(book)
         return result
 
     already_reviewed = set(user.reviews.values_list("book_id", flat=True))
     base_qs = recommendation_candidates(already_reviewed)
-    collab_predictions, books_with_collab_data, top_source = build_collab_candidates(user, base_qs)
+    collab_predictions, books_with_collab_data, top_source, sources = build_collab_candidates(user, base_qs, include_sources=True)
     alpha = (0.85 if books_with_collab_data < 2 else 0.7) if collab_predictions else 1.0
     if user.taste_embedding is None:
+        alpha = 0.0
+    if mode == "content":
+        alpha = 1.0
+    elif mode == "collaborative":
         alpha = 0.0
     fields = ("id", "title", "author", "genres", "avg_rating", "ratings_count", "work_id")
 
@@ -161,6 +171,7 @@ def hybrid_recommendations(user, limit=20, content_pool_size=500):
 
     scored = []
     for book, content_score in candidates_by_id.values():
+        book.recommendation_sources = sorted(sources.get(book.id, []), key=lambda source: (-source["contribution"], source["id"]))
         raw_collab = collab_predictions.get(book.id, 0)
         weighted_content = alpha * content_score
         weighted_collab = (1 - alpha) * raw_collab
@@ -184,7 +195,7 @@ def hybrid_recommendations(user, limit=20, content_pool_size=500):
     top_books = preferred_editions(unique_work_books((book for _, book in scored), limit))
 
     cache_payload = [
-        {"id": b.id, "reason": b.recommendation_reason} for b in top_books
+        {"id": b.id, "reason": b.recommendation_reason, "sources": b.recommendation_sources} for b in top_books
     ]
     if use_cache:
         cache.set(cache_key, cache_payload, timeout=CACHE_TIMEOUT)

@@ -1,4 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import SearchView from '../views/SearchView.vue'
+import RecommendationsView from '../views/RecommendationsView.vue'
 import HomeView from '../views/HomeView.vue'
 import BookDetailView from '../views/BookDetailView.vue'
 import LoginView from '../views/LoginView.vue'
@@ -10,6 +12,8 @@ import PublicProfileView from '../views/PublicProfileView.vue'
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
+    { path: '/search', name: 'search', component: SearchView },
+    { path: '/recommendations', name: 'recommendations', component: RecommendationsView },
     {
       path: '/readers/:username',
       name: 'public-profile',

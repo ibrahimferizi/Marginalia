@@ -2,7 +2,7 @@
 import { RouterLink } from 'vue-router'
 import placeholderCover from '@/assets/placeholder-cover.png'
 
-defineProps({ books: { type: Array, required: true }, horizontal: Boolean, reasons: Boolean, showSources: Boolean, mode: { type: String, default: 'hybrid' } })
+defineProps({ books: { type: Array, required: true }, horizontal: Boolean, reasons: Boolean, similar: Boolean, showSources: Boolean, mode: { type: String, default: 'hybrid' } })
 
 function reasonText(reason) {
   if (reason.type === 'hybrid') return `Matches your reading interests, with reader overlap from ${reason.source_book.title}`
@@ -26,6 +26,7 @@ function coverError(event) {
       <p v-if="book.reading_status" class="reading-status">{{ book.reading_status }}</p>
       <small v-if="book.ratings_count">{{ Number(book.ratings_count).toLocaleString() }} ratings · {{ book.avg_rating }}/5</small>
       <small v-else>No ratings yet</small>
+      <p v-if="similar && book.recommendation_reason" class="similar-reason">{{ book.recommendation_reason.type === 'collaborative' ? 'Readers also rated' : 'Related genres and themes' }}</p>
       <p v-if="reasons && book.recommendation_reason">
         <RouterLink :to="{ name: 'recommendations', query: book.recommendation_reason.source_book ? { mode, source: book.recommendation_reason.source_book.id } : { mode: 'content' } }">
           {{ reasonText(book.recommendation_reason) }}

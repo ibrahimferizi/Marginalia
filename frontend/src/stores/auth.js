@@ -15,7 +15,7 @@ export const useAuthStore = defineStore('auth', () => {
       body: JSON.stringify({ username: usernameInput, password }),
     })
     if (!response.ok) {
-      throw new Error('Invalid username or password')
+      throw new Error(response.status === 400 || response.status === 401 ? 'Invalid username or password.' : 'Could not log in right now. Please try again.')
     }
     username.value = usernameInput
   }
@@ -50,7 +50,7 @@ export const useAuthStore = defineStore('auth', () => {
     if (!response.ok) {
       const data = await response.json().catch(() => ({}))
       const firstError = Object.values(data)[0]
-      throw new Error(Array.isArray(firstError) ? firstError[0] : 'Registration failed')
+      throw new Error(Array.isArray(firstError) ? firstError[0] : typeof firstError === 'string' ? firstError : 'Could not create your account. Please try again.')
     }
   }
 

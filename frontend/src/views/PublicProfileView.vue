@@ -17,7 +17,7 @@ const nextPage = ref(null)
 let requestVersion = 0
 
 async function fetchReviews(url, version, append = false) {
-  const response = await fetch(url)
+  const response = await fetch(url, { credentials: 'omit' })
   if (!response.ok) throw new Error('Could not load reviews')
   const data = await response.json()
   if (version !== requestVersion) return
@@ -36,7 +36,7 @@ async function loadProfile() {
   nextPage.value = null
   const username = encodeURIComponent(route.params.username)
   try {
-    const response = await fetch(`${API_BASE}/accounts/${username}/`)
+    const response = await fetch(`${API_BASE}/accounts/${username}/`, { credentials: 'omit' })
     if (!response.ok) throw new Error(response.status === 404 ? 'Reader not found' : 'Could not load profile')
     const data = await response.json()
     if (version !== requestVersion) return

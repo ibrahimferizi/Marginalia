@@ -1,4 +1,5 @@
 import { ref, onBeforeUnmount } from 'vue'
+import { apiFetch } from '../api'
 
 export function usePagedBooks() {
   const books = ref([])
@@ -27,7 +28,7 @@ export function usePagedBooks() {
     controller = request
     loading.value = true
     try {
-      const response = await fetch(url, { credentials: 'include', signal: request.signal })
+      const response = await apiFetch(url, { signal: request.signal })
       if (!response.ok) throw new Error(response.status === 401 ? 'Please log in to continue.' : 'Could not load books. Please try again.')
       const data = await response.json()
       if (request.signal.aborted) return

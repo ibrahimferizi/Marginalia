@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 
-import { API_BASE } from '../api'
+import { API_BASE, apiFetch } from '../api'
 
 export const useAuthStore = defineStore('auth', () => {
   const username = ref(null)
@@ -21,21 +21,24 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function logout() {
-    await fetch(`${API_BASE}/accounts/logout/`, {
+    const response = await fetch(`${API_BASE}/accounts/logout/`, {
       method: 'POST',
       credentials: 'include',
     })
+    if (!response.ok) throw new Error('Could not log out. Please try again.')
     username.value = null
   }
 
   async function fetchCurrentUser() {
-    const response = await fetch(`${API_BASE}/accounts/me/`, {
-      credentials: 'include',
-    })
-    if (response.ok) {
-      const data = await response.json()
-      username.value = data.username
-    } else {
+    try {
+      const response = await apiFetch(`${API_BASE}/accounts/me/`)
+      if (response.ok) {
+        const data = await response.json()
+        username.value = data.username
+      } else {
+        username.value = null
+      }
+    } catch {
       username.value = null
     }
   }

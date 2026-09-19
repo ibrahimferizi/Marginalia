@@ -2,7 +2,7 @@
 import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import { useRoute, RouterLink } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
-import { API_BASE } from '../api'
+import { API_BASE, apiFetch } from '../api'
 import BookShelf from '../components/BookShelf.vue'
 
 const route = useRoute()
@@ -47,7 +47,7 @@ const genres = computed(() => Object.entries(book.value?.genres || {}).sort((a, 
 const ratingLabels = ['Choose a rating', 'Not for me', 'It was okay', 'I liked it', 'I really liked it', 'A favourite']
 
 async function request(url, signal, options = {}) {
-  const response = await fetch(url, { credentials: auth.isLoggedIn ? 'include' : 'omit', signal, ...options })
+  const response = await apiFetch(url, { credentials: auth.isLoggedIn ? 'include' : 'omit', signal, ...options })
   const data = await response.json().catch(() => ({}))
   if (!response.ok) {
     if (response.status === 404) throw new Error('This book could not be found.')

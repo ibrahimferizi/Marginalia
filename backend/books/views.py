@@ -14,8 +14,6 @@ from rest_framework.exceptions import ValidationError
 from .embeddings import get_embedding_model
 from .search import search_books
 
-# Create your views here.
-
 class BookViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Book.objects.all()
     serializer_class = BookSerializer

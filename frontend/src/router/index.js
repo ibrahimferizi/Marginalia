@@ -8,9 +8,14 @@ import ReadingListView from '../views/ReadingListView.vue'
 import ProfileView from '../views/ProfileView.vue'
 import RegisterView from '../views/RegisterView.vue'
 import PublicProfileView from '../views/PublicProfileView.vue'
+import NotFoundView from '../views/NotFoundView.vue'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
+  scrollBehavior(to, from, savedPosition) {
+    if (savedPosition) return savedPosition
+    if (to.path !== from.path) return { top: 0 }
+  },
   routes: [
     { path: '/search', name: 'search', component: SearchView },
     { path: '/recommendations', name: 'recommendations', component: RecommendationsView },
@@ -49,6 +54,7 @@ const router = createRouter({
       name: 'register',
       component: RegisterView,
     },
+    { path: '/:pathMatch(.*)*', name: 'not-found', component: NotFoundView },
   ],
 })
 

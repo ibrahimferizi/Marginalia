@@ -1,9 +1,6 @@
-from django.shortcuts import render
 from rest_framework import permissions, viewsets
 from .models import ReadingList
 from .serializers import ReadingListSerializer
-
-# Create your views here.
 
 class ReadingListViewSet(viewsets.ModelViewSet):
     serializer_class = ReadingListSerializer

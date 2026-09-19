@@ -1,9 +1,6 @@
-from django.shortcuts import render
 from rest_framework import permissions, viewsets
 from .models import Review
 from .serializers import ReviewSerializer
-
-# Create your views here.
 
 class IsOwnerOrReadOnly(permissions.BasePermission):
     def has_object_permission(self, request, view, obj):

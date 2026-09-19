@@ -1,6 +1,6 @@
 <script setup>
 import { computed, ref, watch, onUnmounted } from 'vue'
-import { API_BASE } from '../api'
+import { API_BASE, apiFetch } from '../api'
 import { useAuthStore } from '../stores/auth'
 import ReaderAvatar from '../components/ReaderAvatar.vue'
 
@@ -30,7 +30,7 @@ async function fetchStats(signal = controller?.signal) {
   statsLoading.value = true
   statsError.value = ''
   try {
-    const response = await fetch(`${API_BASE}/accounts/me/stats/`, { credentials: 'include', signal })
+    const response = await apiFetch(`${API_BASE}/accounts/me/stats/`, { signal })
     if (!response.ok) throw new Error('Could not load your reading statistics. Please try again.')
     const data = await response.json()
     if (!signal?.aborted) stats.value = data
@@ -58,7 +58,7 @@ async function loadProfile() {
   loading.value = true
   fetchStats(signal)
   try {
-    const response = await fetch(`${API_BASE}/accounts/me/`, { credentials: 'include', signal })
+    const response = await apiFetch(`${API_BASE}/accounts/me/`, { signal })
     if (!response.ok) throw new Error(response.status === 401 ? 'Your session has expired. Please log in again.' : 'Could not load your profile. Please try again.')
     const data = await response.json()
     if (signal.aborted) return
@@ -79,7 +79,7 @@ async function saveProfile() {
   saveMessage.value = ''
   saveError.value = ''
   try {
-    const response = await fetch(`${API_BASE}/accounts/me/`, {
+    const response = await apiFetch(`${API_BASE}/accounts/me/`, {
       method: 'PATCH', credentials: 'include', signal,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ bio: bio.value, avatar_url: avatarUrl.value.trim() }),

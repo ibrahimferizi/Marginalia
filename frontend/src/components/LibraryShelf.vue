@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, nextTick, onBeforeUnmount, watch } from 'vue'
 import { RouterLink } from 'vue-router'
+import GoogleBooksAttribution from './GoogleBooksAttribution.vue'
 
 const props = defineProps({ books: { type: Array, required: true } })
 const rail = ref(null)
@@ -59,7 +60,7 @@ onBeforeUnmount(() => {
     </div>
     <div ref="rail" class="shelf-rail" role="region" aria-label="Your books in 3D" tabindex="0" @keydown.left.prevent="scroll(-1)" @keydown.right.prevent="scroll(1)">
       <ul class="spines">
-        <li v-for="book in styledBooks" :key="book.id" :style="book.style">
+        <li v-for="book in styledBooks" :key="book.id" :style="book.style" :class="{ 'google-book': book.google_books_id }">
           <button class="book-target" :aria-label="`Preview ${book.title} by ${book.author}`" @mouseenter="hovered = book" @mouseleave="hovered = null" @focus="hovered = book" @blur="hovered = null" @click="openBook(book, $event)">
             <span class="volume" aria-hidden="true">
               <span class="book-front">
@@ -70,6 +71,7 @@ onBeforeUnmount(() => {
               <span class="book-pages"></span>
             </span>
           </button>
+          <GoogleBooksAttribution :book="book" class="spine-attribution" />
         </li>
       </ul>
     </div>
@@ -82,9 +84,12 @@ onBeforeUnmount(() => {
       <template v-if="selected">
         <button class="close-preview" aria-label="Close book preview" autofocus @click="dialog.close()">✕</button>
         <div class="preview-layout">
+          <div>
           <div class="preview-cover" :style="selected.style">
             <img v-if="selected.cover_url && !brokenCovers.has(selected.id)" :src="selected.cover_url" :alt="selected.title" @error="broken(selected.id)" />
             <div v-else class="cover-fallback"><span>{{ selected.title }}</span><small>{{ selected.author }}</small></div>
+          </div>
+          <GoogleBooksAttribution :book="selected" />
           </div>
           <div class="preview-copy">
             <p class="eyebrow">{{ selected.reading_status }}</p>
@@ -109,6 +114,9 @@ onBeforeUnmount(() => {
 .spines { display: flex; align-items: end; gap: 14px; padding: 80px 80px 28px 32px; margin: 0; list-style: none; min-width: max-content; min-height: 380px; }
 .spines > li { width: calc(var(--thickness) + 21px); height: var(--book-height); perspective: 1100px; position: relative; }
 .spines > li:focus-within, .spines > li:hover { z-index: 2; }
+.spines:has(.google-book) { padding-bottom: 70px; }
+.spines > li.google-book { min-width: 62px; }
+.spine-attribution { position: absolute; top: 100%; left: 0; }
 .book-target { border: 0; border-radius: 0; padding: 0; display: block; width: 100%; height: 100%; background: none !important; position: relative; }
 .volume { display: block; position: absolute; top: 0; left: 0; width: 156px; height: 100%; transform-style: preserve-3d; transform-origin: 0 50%; transform: rotateY(78deg) rotateZ(var(--lean)); transition: transform .55s cubic-bezier(.2,.75,.25,1); }
 .book-target:focus-visible .volume { transform: translateY(-18px) rotateY(35deg); }

@@ -4,7 +4,7 @@ from .models import Book
 class BookPreviewSerializer(serializers.ModelSerializer):
     class Meta:
         model = Book
-        fields = ["id", "title", "author", "description", "cover_url", "published_year", "page_count", "avg_rating", "ratings_count"]
+        fields = ["id", "google_books_id", "title", "author", "description", "cover_url", "published_year", "page_count", "avg_rating", "ratings_count"]
 
 class BookSerializer(serializers.ModelSerializer):
     recommendation_reason = serializers.SerializerMethodField()

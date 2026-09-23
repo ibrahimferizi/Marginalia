@@ -97,7 +97,6 @@ class Command(BaseCommand):
                 uf.union(ids[0], other_id)
 
         components = defaultdict(list)
-        books_by_id = {b.id: b for b in books}
         for book in books:
             root = uf.find(book.id)
             components[root].append(book)

@@ -4,14 +4,7 @@ from reviews.signals import _recalculate_taste_vector
 
 
 class Command(BaseCommand):
-    help = (
-        "Backfill taste_embedding for existing users with reviews. "
-        "Needed one-time after Phase 3.5's #10 content-score upgrade, since "
-        "taste_embedding is only computed inside _recalculate_taste_vector, "
-        "which only fires on Review post_save/post_delete signals — users "
-        "with reviews predating that change won't have it populated until "
-        "they add or delete a review, or this command is run."
-    )
+    help = "Recalculate genre preferences and taste embeddings for existing users with reviews."
 
     def handle(self, *args, **options):
         users = User.objects.filter(reviews__isnull=False).distinct()

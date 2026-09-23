@@ -1,7 +1,6 @@
 import gzip
 import heapq
 import json
-import math
 import random
 
 from django.core.management.base import BaseCommand

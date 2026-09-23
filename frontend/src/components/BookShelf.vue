@@ -1,6 +1,7 @@
 <script setup>
 import { RouterLink } from 'vue-router'
 import placeholderCover from '@/assets/placeholder-cover.png'
+import GoogleBooksAttribution from './GoogleBooksAttribution.vue'
 
 defineProps({ books: { type: Array, required: true }, horizontal: Boolean, reasons: Boolean, similar: Boolean, showSources: Boolean, mode: { type: String, default: 'hybrid' } })
 
@@ -20,6 +21,9 @@ function coverError(event) {
     <li v-for="book in books" :key="book.id">
       <RouterLink :to="`/books/${book.id}`">
         <img :src="book.cover_url || placeholderCover" :alt="book.title" loading="lazy" @error="coverError" />
+      </RouterLink>
+      <GoogleBooksAttribution :book="book" />
+      <RouterLink :to="`/books/${book.id}`">
         <span>{{ book.title }}</span>
       </RouterLink>
       <p>{{ book.author }}</p>

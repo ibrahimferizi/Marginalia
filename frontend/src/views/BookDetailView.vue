@@ -4,6 +4,7 @@ import { useRoute, RouterLink } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { API_BASE, apiFetch } from '../api'
 import BookShelf from '../components/BookShelf.vue'
+import GoogleBooksAttribution from '../components/GoogleBooksAttribution.vue'
 
 const route = useRoute()
 const auth = useAuthStore()
@@ -228,6 +229,7 @@ onBeforeUnmount(() => { controller?.abort(); reviewsController?.abort(); documen
             <img v-if="book.cover_url && !coverBroken" :src="book.cover_url" :alt="`Cover of ${book.title}`" class="main-cover" @error="coverBroken = true" />
             <div v-else class="fallback-cover"><span>{{ book.title }}</span><small>{{ book.author }}</small><span class="fallback-mark" aria-hidden="true">m.</span></div>
           </div>
+          <GoogleBooksAttribution :book="book" />
           <div class="reading-controls">
             <template v-if="auth.isLoggedIn">
               <label for="reading-status">In your library</label>

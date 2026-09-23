@@ -6,6 +6,10 @@ from pgvector.django import CosineDistance
 
 CACHE_TIMEOUT = None
 
+
+def exploration_cache_key(user_id, mode):
+    return f"recommendations:explore:v1:{user_id}:{mode}"
+
 STUDY_AID_PATTERN = r'\m(monarch\s+notes|cliffs?\s*notes|spark\s*notes)\M|\msummary\s*(&\s*)?study\s+guide\M|\mby\M.+\mstudy\s+guide\M'
 
 
@@ -116,12 +120,13 @@ def preferred_editions(books):
 
 
 def hybrid_recommendations(user, limit=20, content_pool_size=500, mode="hybrid"):
-    cache_key = f"recommendations:hybrid:v10:{user.id}"
-    use_cache = limit == 20 and content_pool_size == 500 and mode == "hybrid"
+    exploring = limit is None and content_pool_size == 500 and mode in {"hybrid", "content", "collaborative"}
+    cache_key = exploration_cache_key(user.id, mode) if exploring else f"recommendations:hybrid:v10:{user.id}"
+    use_cache = exploring or (limit == 20 and content_pool_size == 500 and mode == "hybrid")
     cached = cache.get(cache_key) if use_cache else None
     if cached is not None:
         book_ids = [entry["id"] for entry in cached]
-        books = Book.objects.filter(id__in=book_ids)
+        books = Book.objects.filter(id__in=book_ids).defer("embedding")
         books_by_id = {b.id: b for b in books}
         result = []
         for entry in cached:
@@ -142,7 +147,7 @@ def hybrid_recommendations(user, limit=20, content_pool_size=500, mode="hybrid")
         alpha = 1.0
     elif mode == "collaborative":
         alpha = 0.0
-    fields = ("id", "title", "author", "genres", "avg_rating", "ratings_count", "work_id")
+    fields = ("id", "title", "author", "genres", "avg_rating", "ratings_count", "work_id", "ucsd_id", "google_books_id", "description", "cover_url", "published_year", "page_count", "isbn", "similar_books")
 
     candidates_by_id = {}
     taste_embedding = user.taste_embedding
@@ -198,7 +203,7 @@ def hybrid_recommendations(user, limit=20, content_pool_size=500, mode="hybrid")
         {"id": b.id, "reason": b.recommendation_reason, "sources": b.recommendation_sources} for b in top_books
     ]
     if use_cache:
-        cache.set(cache_key, cache_payload, timeout=CACHE_TIMEOUT)
+        cache.set(cache_key, cache_payload, timeout=3600 if exploring else CACHE_TIMEOUT)
     return top_books
 
 def content_similar_books(book, limit=15):

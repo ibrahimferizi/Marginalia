@@ -7,6 +7,7 @@ from .enrichment import enrich_book
 from .models import Book
 from .recommendations import hybrid_recommendations, similar_books_for, recommendation_candidates, preferred_editions, unique_work_books
 from .serializers import BookSerializer
+from .pagination import BookPagination
 
 from django.db.models import Case, When, Value, IntegerField
 from rest_framework.exceptions import ValidationError
@@ -15,6 +16,7 @@ from .embeddings import get_embedding_model
 from .search import search_books
 
 class BookViewSet(viewsets.ReadOnlyModelViewSet):
+    pagination_class = BookPagination
     queryset = Book.objects.all()
     serializer_class = BookSerializer
     filter_backends = [filters.SearchFilter]
@@ -46,7 +48,7 @@ class BookViewSet(viewsets.ReadOnlyModelViewSet):
             excluded.update(request.user.reading_list_entries.exclude(status="want_to_read").values_list("book_id", flat=True))
         candidates = recommendation_candidates(excluded).order_by("-ratings_count", "id")[:500]
         pool = preferred_editions(unique_work_books(candidates, 200))
-        selected = random.SystemRandom().sample(pool, min(20, len(pool)))
+        selected = random.SystemRandom().sample(pool, min(BookPagination.page_size, len(pool)))
         return Response(self.get_serializer(selected, many=True).data)
 
     @action(detail=False, methods=["get"], permission_classes=[permissions.IsAuthenticated])
@@ -79,7 +81,7 @@ class BookViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=False, methods=["get"], permission_classes=[permissions.IsAuthenticated])
     def recommended(self, request):
-        books = hybrid_recommendations(request.user)
+        books = hybrid_recommendations(request.user)[:BookPagination.page_size]
         serializer = self.get_serializer(books, many=True)
         return Response(serializer.data)
 

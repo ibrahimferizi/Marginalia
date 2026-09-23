@@ -4,6 +4,7 @@ from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 from .models import Review
 from django.core.cache import cache
+from books.recommendations import exploration_cache_key
 
 def _recalculate_book_rating(book):
     stats = book.reviews.aggregate(avg=Avg("rating"), count=Count("id"))
@@ -48,6 +49,7 @@ def _recalculate_taste_vector(user):
     )
     user.save(update_fields=["taste_vector", "taste_embedding"])
     cache.delete(f"recommendations:hybrid:v10:{user.id}")
+    cache.delete_many([exploration_cache_key(user.id, mode) for mode in ("hybrid", "content", "collaborative")])
 
 @receiver(post_save, sender=Review)
 def update_book_rating_on_save(sender, instance, **kwargs):

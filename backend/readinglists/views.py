@@ -1,8 +1,10 @@
 from rest_framework import permissions, viewsets
 from .models import ReadingList
 from .serializers import ReadingListSerializer
+from books.pagination import BookPagination
 
 class ReadingListViewSet(viewsets.ModelViewSet):
+    pagination_class = BookPagination
     serializer_class = ReadingListSerializer
     permission_classes = [permissions.IsAuthenticated]
 
